@@ -4,3 +4,4 @@ networkx
 google-generativeai
 python-dotenv
 requests
+python-multipart

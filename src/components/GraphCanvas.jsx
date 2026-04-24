@@ -1,99 +1,196 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import ForceGraph2D from "react-force-graph-2d";
+import ForceGraph3D from "react-force-graph-3d";
+import SpriteText from "three-spritetext";
+import * as THREE from "three";
 import useStore from "../store/useStore";
 
-const nodeColorByType = (type) => {
-  if (type === "external") return "#9aa4b2";
-  if (type === "network") return "#4ea1ff";
-  if (type === "server") return "#9b7bff";
-  if (type === "data") return "#ff5f6d";
-  return "#6f7c8f";
+// ─── Node color map (identical to previous 2D version) ───────────────────────
+const NODE_COLORS = {
+  source:       "#22c55e",
+  sink:         "#ef4444",
+  intermediate: "#f59e0b",
+  function:     "#3b82f6",
+  sanitizer:    "#a78bfa",
+  default:      "#6b7280",
 };
 
-const GraphCanvas = ({ onNodeClick }) => {
-  const graph = useStore((state) => state.graph);
-  const path = useStore((state) => state.path);
-  const containerRef = useRef(null);
-  const [size, setSize] = useState({ width: 300, height: 300 });
+// Risk ring / glow tint colours for sink nodes
+const RISK_COLORS = {
+  critical: "#ef4444",
+  high:     "#f97316",
+  medium:   "#eab308",
+  low:      "#22c55e",
+};
 
+const nodeColorByType = (type) => NODE_COLORS[type] || NODE_COLORS.default;
+
+const LEGEND = [
+  { label: "Source",    color: NODE_COLORS.source },
+  { label: "Sink",      color: NODE_COLORS.sink },
+  { label: "Taint",     color: NODE_COLORS.intermediate },
+  { label: "Function",  color: NODE_COLORS.function },
+  { label: "Sanitizer", color: NODE_COLORS.sanitizer },
+];
+
+// ─── Custom Three.js object per node ─────────────────────────────────────────
+// Returns a group containing a sphere + floating label sprite.
+function buildNodeObject(node, isOnPath) {
+  const group = new THREE.Group();
+  const radius = isOnPath ? 5 : node.patched ? 4 : 3.5;
+  const color  = node.patched ? "#4a5568" : nodeColorByType(node.type);
+
+  // Sphere
+  const geometry = new THREE.SphereGeometry(radius, 16, 16);
+  const material = new THREE.MeshLambertMaterial({
+    color,
+    transparent: true,
+    opacity: node.patched ? 0.5 : 1.0,
+  });
+  group.add(new THREE.Mesh(geometry, material));
+
+  // Risk ring shell for sinks (emissive shell slightly larger)
+  if (node.type === "sink" && node.risk && RISK_COLORS[node.risk]) {
+    const ringGeo = new THREE.SphereGeometry(radius + 1.5, 16, 16);
+    const ringMat = new THREE.MeshLambertMaterial({
+      color: RISK_COLORS[node.risk],
+      transparent: true,
+      opacity: 0.18,
+      wireframe: false,
+    });
+    group.add(new THREE.Mesh(ringGeo, ringMat));
+  }
+
+  // Glow ring for path nodes
+  if (isOnPath && !node.patched) {
+    const glowGeo = new THREE.SphereGeometry(radius + 2.5, 16, 16);
+    const glowMat = new THREE.MeshLambertMaterial({
+      color,
+      transparent: true,
+      opacity: 0.12,
+    });
+    group.add(new THREE.Mesh(glowGeo, glowMat));
+  }
+
+  // Floating text label
+  const rawLabel = node.label || (node.id ? node.id.split(":").pop() : "?");
+  const label    = rawLabel.length > 24 ? rawLabel.slice(0, 24) + "…" : rawLabel;
+  const sprite   = new SpriteText(label);
+  sprite.color        = isOnPath ? "#ffffff" : "#c8d4e8";
+  sprite.textHeight   = isOnPath ? 3.2 : 2.4;
+  sprite.fontFace     = "JetBrains Mono, monospace";
+  sprite.position.set(0, radius + 5, 0);
+  group.add(sprite);
+
+  return group;
+}
+
+// ─── GraphCanvas (3D) ─────────────────────────────────────────────────────────
+const GraphCanvas = ({ onNodeClick }) => {
+  const graph        = useStore((state) => state.graph);
+  const path         = useStore((state) => state.path);
+  const containerRef = useRef(null);
+  const graphRef     = useRef(null);
+  const [size, setSize] = useState({ width: 800, height: 600 });
+
+  // Track container dimensions
   useEffect(() => {
     if (!containerRef.current) return;
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
       setSize({
-        width: Math.max(320, Math.floor(entry.contentRect.width)),
-        height: Math.max(320, Math.floor(entry.contentRect.height))
+        width:  Math.max(320, Math.floor(entry.contentRect.width)),
+        height: Math.max(320, Math.floor(entry.contentRect.height)),
       });
     });
     observer.observe(containerRef.current);
     return () => observer.disconnect();
   }, []);
 
-  const pathEdges = useMemo(() => {
-    const edges = new Set();
-    for (let i = 0; i < path.length - 1; i += 1) {
-      edges.add(`${path[i]}->${path[i + 1]}`);
+  // Sets of node/edge IDs on the current highlighted attack path
+  const pathNodeSet = useMemo(() => new Set(path), [path]);
+  const pathEdgeSet = useMemo(() => {
+    const s = new Set();
+    for (let i = 0; i < path.length - 1; i++) {
+      s.add(`${path[i]}->${path[i + 1]}`);
     }
-    return edges;
+    return s;
   }, [path]);
 
-  const clampNodePositions = () => {
-    const nodes = graph?.nodes || [];
-    const padding = 24;
-    const minX = -size.width / 2 + padding;
-    const maxX = size.width / 2 - padding;
-    const minY = -size.height / 2 + padding;
-    const maxY = size.height / 2 - padding;
-
-    nodes.forEach((node) => {
-      node.x = Math.min(maxX, Math.max(minX, node.x ?? 0));
-      node.y = Math.min(maxY, Math.max(minY, node.y ?? 0));
-    });
-  };
+  // After layout stabilises, zoom camera to fit
+  useEffect(() => {
+    if (graphRef.current) {
+      setTimeout(() => graphRef.current.zoomToFit(400, 80), 1200);
+    }
+  }, [graph]);
 
   return (
-    <div className="graph-canvas" ref={containerRef}>
-      <ForceGraph2D
+    <div
+      className="graph-canvas"
+      ref={containerRef}
+      style={{ position: "relative", width: "100%", height: "100%" }}
+    >
+      <ForceGraph3D
+        ref={graphRef}
         width={size.width}
         height={size.height}
         graphData={graph}
-        nodeLabel={(node) => `${node.label || node.id} (${node.type || "Node"})`}
+
+        // ── Node rendering ──────────────────────────────────────────────────
+        nodeLabel={(node) =>
+          `${node.label || node.id} · ${node.type || "node"} · line ${node.line || "?"}`
+        }
+        nodeThreeObject={(node) =>
+          buildNodeObject(node, pathNodeSet.has(node.id))
+        }
+        nodeThreeObjectExtend={false}  // our group IS the whole object
         onNodeClick={(node) => onNodeClick(node)}
-        onEngineTick={clampNodePositions}
-        nodeCanvasObject={(node, ctx, globalScale) => {
-          const label = node.label || node.id;
-          const fontSize = 12 / globalScale;
 
-          ctx.beginPath();
-          ctx.arc(node.x, node.y, node.patched ? 8 : 6, 0, 2 * Math.PI, false);
-          ctx.fillStyle = node.patched ? "#2fd66f" : nodeColorByType(node.type);
-          ctx.fill();
+        // ── Node size (used by force engine for collision) ──────────────────
+        nodeVal={(node) => (pathNodeSet.has(node.id) ? 5 : node.patched ? 4 : 3.5)}
 
-          ctx.font = `${fontSize}px monospace`;
-          ctx.fillStyle = "#d0d7e3";
-          ctx.fillText(label, node.x + 10, node.y + 4);
-        }}
+        // ── Edge rendering ──────────────────────────────────────────────────
         linkWidth={(link) => {
-          const source = link.source.id || link.source;
-          const target = link.target.id || link.target;
-          return pathEdges.has(`${source}->${target}`) ? 3.5 : 1.2;
+          const s = link.source?.id || link.source;
+          const t = link.target?.id || link.target;
+          return pathEdgeSet.has(`${s}->${t}`) ? 3.5 : 1;
         }}
         linkColor={(link) => {
-          const source = link.source.id || link.source;
-          const target = link.target.id || link.target;
-          return pathEdges.has(`${source}->${target}`) ? "#ff4d4f" : "#425066";
+          const s = link.source?.id || link.source;
+          const t = link.target?.id || link.target;
+          if (pathEdgeSet.has(`${s}->${t}`)) return "#ef4444";
+          if (link.type === "call")       return "#3b82f666";
+          if (link.type === "dependency") return "#06b6d466";
+          return "#1e3a5f";
         }}
+        linkOpacity={0.7}
+
+        // ── Directional particles (attack path animation) ───────────────────
         linkDirectionalParticles={(link) => {
-          const source = link.source.id || link.source;
-          const target = link.target.id || link.target;
-          return pathEdges.has(`${source}->${target}`) ? 4 : 0;
+          const s = link.source?.id || link.source;
+          const t = link.target?.id || link.target;
+          return pathEdgeSet.has(`${s}->${t}`) ? 5 : 0;
         }}
-        linkDirectionalParticleWidth={2}
-        linkDirectionalParticleColor={() => "#ff4d4f"}
-        backgroundColor="rgba(0,0,0,0)"
-        cooldownTicks={80}
+        linkDirectionalParticleWidth={2.5}
+        linkDirectionalParticleColor={() => "#ef4444"}
+        linkDirectionalArrowLength={4}
+        linkDirectionalArrowRelPos={1}
+
+        // ── Scene ───────────────────────────────────────────────────────────
+        backgroundColor="#080c14"
+        showNavInfo={false}
+        cooldownTicks={120}
       />
+
+      {/* Legend overlay — CSS-only, unchanged from 2D version */}
+      <div className="graph-legend">
+        {LEGEND.map(({ label, color }) => (
+          <div key={label} className="legend-item">
+            <div className="legend-dot" style={{ background: color }} />
+            <span>{label}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 };
