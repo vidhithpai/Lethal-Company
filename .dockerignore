@@ -39,5 +39,4 @@ dist/
 # ── Docker files themselves ───────────────────────────────────────────────────
 docker-compose*.yml
 Dockerfile*
-nginx.conf
 README.md

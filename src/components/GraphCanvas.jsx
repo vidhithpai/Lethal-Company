@@ -117,12 +117,42 @@ const GraphCanvas = ({ onNodeClick }) => {
     return s;
   }, [path]);
 
-  // After layout stabilises, zoom camera to fit
+  // One-time zoom after initial graph load
   useEffect(() => {
     if (graphRef.current) {
-      setTimeout(() => graphRef.current.zoomToFit(400, 80), 1200);
+      setTimeout(() => graphRef.current.zoomToFit(600, 80), 1400);
     }
   }, [graph]);
+
+  // Per-path zoom: fires whenever bumpZoom() is called from QueryBar
+  const zoomTrigger = useStore((state) => state.zoomTrigger);
+  useEffect(() => {
+    if (!zoomTrigger || !graphRef.current || !path.length) return;
+
+    // Force-graph mutates x/y/z directly on the node objects in the store,
+    // so we can read positions straight from the Zustand graph nodes.
+    const storeNodes = useStore.getState().graph.nodes;
+    const pathNodes  = path
+      .map((id) => storeNodes.find((n) => n.id === id))
+      .filter((n) => n && n.x != null);
+
+    if (!pathNodes.length) {
+      graphRef.current.zoomToFit(600, 60);
+      return;
+    }
+
+    const avg = (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
+    const cx  = avg(pathNodes.map((n) => n.x));
+    const cy  = avg(pathNodes.map((n) => n.y ?? 0));
+    const cz  = avg(pathNodes.map((n) => n.z ?? 0));
+
+    // Fly camera to look at the centroid from a slight angle
+    graphRef.current.cameraPosition(
+      { x: cx, y: cy - 40, z: cz + 180 },  // camera eye
+      { x: cx, y: cy,      z: cz },         // look-at target
+      700                                    // transition ms
+    );
+  }, [zoomTrigger, path]);
 
   return (
     <div
