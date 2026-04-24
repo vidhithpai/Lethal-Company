@@ -1,9 +1,11 @@
 import json
 import os
 import re
+from collections import OrderedDict
 from typing import Any, Dict
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 try:
@@ -15,20 +17,43 @@ except ImportError as exc:  # pragma: no cover
 
 
 app = FastAPI(title="VulnGraph AI Query Layer", version="1.0.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+SYSTEM_PROMPT = """
+You are a cybersecurity assistant for VulnGraph.
+Valid node IDs: internet, firewall, webserver, appserver, database, cache
+
+Extract from the user query:
+- target_node: one of the valid node IDs (default: database)
+- intent: always "attack_path"
+- explanation: 2-3 sentences of remediation advice for reaching that node
+
+Respond ONLY with valid JSON, no markdown, no preamble.
+""".strip()
+
+FALLBACK_RESPONSE = {
+    "target_node": "database",
+    "intent": "attack_path",
+    "explanation": "Patch critical CVEs on webserver and appserver to block database access.",
+}
+VALID_NODE_IDS = {"internet", "firewall", "webserver", "appserver", "database", "cache"}
+CACHE_LIMIT = 10
+QUERY_CACHE: "OrderedDict[str, Dict[str, str]]" = OrderedDict()
 
 
 class AskRequest(BaseModel):
-    question: str = Field(..., min_length=1, description="Natural language query")
-
-
-class QueryObject(BaseModel):
-    intent: str
-    source: str
-    target: str
+    query: str = Field(..., min_length=1, description="Natural language query")
 
 
 class AskResponse(BaseModel):
-    query: QueryObject
+    target_node: str
+    intent: str
     explanation: str
 
 
@@ -54,75 +79,71 @@ def _extract_json(text: str) -> Dict[str, Any]:
 
 def _build_prompt(question: str) -> str:
     return f"""
-You are the VulnGraph AI Query Layer.
+{SYSTEM_PROMPT}
 
-Task:
-Convert a natural language security graph question into strict JSON only.
-
-Rules:
-1) Extract target node from the question.
-2) Default source to "user_device" when not explicitly provided.
-3) intent must be "attack_path".
-4) Return ONLY valid JSON with this exact shape:
-{{
-  "query": {{
-    "intent": "attack_path",
-    "source": "user_device",
-    "target": "<extracted_target>"
-  }},
-  "explanation": "<short remediation suggestion>"
-}}
-5) explanation must be concise and actionable.
-6) No markdown, no code fences, no extra keys.
-
-Input question:
+User query:
 {question}
 """.strip()
 
 
-def ask_gemini(question: str) -> Dict[str, Any]:
+def _normalize_payload(payload: Dict[str, Any]) -> Dict[str, str]:
+    target_node = str(payload.get("target_node", "database")).strip().lower()
+    if target_node not in VALID_NODE_IDS:
+        target_node = "database"
+
+    explanation = str(payload.get("explanation", FALLBACK_RESPONSE["explanation"])).strip()
+    if not explanation:
+        explanation = FALLBACK_RESPONSE["explanation"]
+
+    return {
+        "target_node": target_node,
+        "intent": "attack_path",
+        "explanation": explanation,
+    }
+
+
+def _cache_get(query: str) -> Dict[str, str] | None:
+    if query not in QUERY_CACHE:
+        return None
+    QUERY_CACHE.move_to_end(query)
+    return QUERY_CACHE[query]
+
+
+def _cache_put(query: str, value: Dict[str, str]) -> None:
+    QUERY_CACHE[query] = value
+    QUERY_CACHE.move_to_end(query)
+    if len(QUERY_CACHE) > CACHE_LIMIT:
+        QUERY_CACHE.popitem(last=False)
+
+
+def ask_gemini(question: str) -> Dict[str, str]:
+    cached = _cache_get(question)
+    if cached:
+        return cached
+
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        raise HTTPException(
-            status_code=500, detail="Missing GEMINI_API_KEY environment variable"
-        )
+        _cache_put(question, FALLBACK_RESPONSE)
+        return FALLBACK_RESPONSE
 
     genai.configure(api_key=api_key)
 
-    # Gemini 1.5 model family
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-2.0-flash")
     prompt = _build_prompt(question)
 
     try:
         response = model.generate_content(prompt)
         raw_text = (response.text or "").strip()
         payload = _extract_json(raw_text)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code=502, detail=f"Gemini returned non-JSON content: {exc}"
-        ) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Gemini API error: {exc}") from exc
-
-    # Enforce output contract even if model drifts.
-    query = payload.get("query", {})
-    target = query.get("target", "database")
-    explanation = payload.get(
-        "explanation",
-        "Reduce attack paths by tightening access controls and segmenting sensitive services.",
-    )
-
-    return {
-        "query": {
-            "intent": "attack_path",
-            "source": query.get("source", "user_device") or "user_device",
-            "target": target,
-        },
-        "explanation": explanation,
-    }
+        normalized = _normalize_payload(payload)
+        _cache_put(question, normalized)
+        return normalized
+    except Exception:
+        _cache_put(question, FALLBACK_RESPONSE)
+        return FALLBACK_RESPONSE
 
 
 @app.post("/api/query/ask", response_model=AskResponse)
 def ask_query(body: AskRequest) -> AskResponse:
-    result = ask_gemini(body.question)
+    result = ask_gemini(body.query)
     return AskResponse(**result)
