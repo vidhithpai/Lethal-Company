@@ -1,0 +1,50 @@
+{
+  "nodes": [
+    {
+      "id": "n1",
+      "label": "HTTP Entry",
+      "type": "Entry",
+      "file": "server/routes/user.js",
+      "function": "createUser",
+      "description": "Public endpoint receives user input."
+    },
+    {
+      "id": "n2",
+      "label": "Unsanitized Input",
+      "type": "Vulnerability",
+      "file": "server/controllers/account.js",
+      "function": "handleProfileUpdate",
+      "description": "Input reaches sink without validation."
+    },
+    {
+      "id": "n3",
+      "label": "Command Builder",
+      "type": "Vulnerability",
+      "file": "server/services/exec.js",
+      "function": "buildShellCommand",
+      "description": "User-controlled string concatenated in shell command."
+    },
+    {
+      "id": "n4",
+      "label": "System Sink",
+      "type": "Sink",
+      "file": "server/services/exec.js",
+      "function": "exec",
+      "description": "Potential command execution sink."
+    },
+    {
+      "id": "n5",
+      "label": "Audit Logger",
+      "type": "Sink",
+      "file": "server/logging/audit.js",
+      "function": "writeAuditLog",
+      "description": "Records security events after exploit path."
+    }
+  ],
+  "edges": [
+    { "source": "n1", "target": "n2" },
+    { "source": "n2", "target": "n3" },
+    { "source": "n3", "target": "n4" },
+    { "source": "n4", "target": "n5" }
+  ]
+}
