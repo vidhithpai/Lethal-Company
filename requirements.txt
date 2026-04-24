@@ -1,3 +1,6 @@
 fastapi
+uvicorn
+google-generativeai
+fastapi
 uvicorn[standard]
 networkx
