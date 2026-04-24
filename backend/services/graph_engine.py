@@ -14,6 +14,9 @@ class GraphPaths:
     data_path: Path
 
 
+PATCHED_NODES: dict[str, bool] = {}
+
+
 class GraphEngine:
     def __init__(self, config: GraphPaths) -> None:
         self._config = config
@@ -35,11 +38,13 @@ class GraphEngine:
 
         for n in nodes:
             node_id = str(n["id"])
+            patched = bool(PATCHED_NODES.get(node_id, bool(n.get("patched", False))))
+            PATCHED_NODES.setdefault(node_id, patched)
             node_attrs[node_id] = {
                 "id": node_id,
                 "label": str(n.get("label", "")),
                 "type": str(n.get("type", "")),
-                "patched": bool(n.get("patched", False)),
+                "patched": patched,
             }
             g.add_node(node_id)
 
@@ -51,8 +56,11 @@ class GraphEngine:
                 "target": t,
                 "cve": str(e.get("cve", "")),
                 "weight": float(e.get("weight", 1)),
+                "severity": str(e.get("severity", "")),
             }
             if s not in node_attrs or t not in node_attrs:
+                continue
+            if node_attrs[s]["patched"] or node_attrs[t]["patched"]:
                 continue
             g.add_edge(s, t, weight=edge_data["weight"])
             edge_attrs[(s, t)] = edge_data
@@ -64,7 +72,13 @@ class GraphEngine:
 
     def get_graph(self) -> dict[str, Any]:
         with self._lock:
-            nodes = list(self._node_attrs.values())
+            nodes = []
+            for node_id, attrs in self._node_attrs.items():
+                patched = bool(PATCHED_NODES.get(node_id, attrs.get("patched", False)))
+                PATCHED_NODES[node_id] = patched
+                node_copy = dict(attrs)
+                node_copy["patched"] = patched
+                nodes.append(node_copy)
             edges = list(self._edge_attrs.values())
         return {"nodes": nodes, "edges": edges}
 
@@ -83,6 +97,7 @@ class GraphEngine:
                 return False
 
             self._node_attrs[node_id]["patched"] = True
+            PATCHED_NODES[node_id] = True
 
             to_remove: list[tuple[str, str]] = []
             for (s, t) in list(self._edge_attrs.keys()):

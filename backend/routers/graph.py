@@ -14,9 +14,9 @@ def read_graph():
 
 
 @router.get("/path")
-def read_path(source: str, target: str):
+def read_path(target: str):
     engine = get_engine()
-    path = engine.get_attack_path(source, target)
+    path = engine.get_attack_path("internet", target)
     return {"path": path}
 
 
@@ -26,5 +26,5 @@ def patch_node(node_id: str):
     ok = engine.patch_node(node_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Node not found")
-    return {"message": "Node patched successfully"}
+    return engine.get_graph()
 
