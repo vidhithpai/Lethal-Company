@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import GraphCanvas from "./components/GraphCanvas";
 import QueryBar from "./components/QueryBar";
 import SidePanel from "./components/SidePanel";
+import MetricsBar from "./components/MetricsBar";
 import { endpoints, normalizeGraph } from "./api";
 import useStore from "./store/useStore";
 
@@ -37,6 +38,7 @@ const App = () => {
   return (
     <div className="app-root">
       <QueryBar />
+      <MetricsBar />
       <div className="main-layout">
         <div className="graph-wrap">
           <GraphCanvas onNodeClick={setSelectedNode} />

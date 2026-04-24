@@ -9,7 +9,6 @@ const ANIM_INTERVAL_MS = 2000;
 const MULTI_PATH_INTENTS = new Set([
   "show_attack_paths",
   "show_high_risk",
-  "general",
 ]);
 
 const QueryBar = () => {

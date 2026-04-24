@@ -159,6 +159,99 @@ html, body, #root {
   background: rgba(239,68,68,0.25);
 }
 
+/* ─── METRICS BAR (WF5) ────────────────────────── */
+
+.metrics-bar {
+  display: flex;
+  gap: 16px;
+  padding: 10px 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  backdrop-filter: blur(8px);
+  align-items: center;
+  margin-bottom: 6px;
+  box-shadow: 0 2px 16px rgba(0,0,0,0.2);
+  flex-wrap: wrap;
+}
+
+.metric-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.metric-icon {
+  font-size: 16px;
+  color: var(--text-muted);
+}
+
+.metric-data {
+  display: flex;
+  flex-direction: column;
+}
+
+.metric-value {
+  font-size: 14px;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-primary);
+  line-height: 1;
+}
+
+.metric-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.metric-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--border);
+  margin: 0 4px;
+}
+
+.metric-status {
+  margin-left: auto;
+}
+
+.status-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.status-live {
+  background: rgba(47, 214, 111, 0.1);
+  color: #2fd66f;
+  border: 1px solid rgba(47, 214, 111, 0.2);
+}
+
+.status-scanning {
+  background: rgba(244, 197, 66, 0.1);
+  color: #f4c542;
+  border: 1px solid rgba(244, 197, 66, 0.2);
+}
+
+.scan-time {
+  text-transform: none;
+  font-weight: 400;
+  font-family: 'Inter', sans-serif;
+  color: var(--text-muted);
+  margin-left: 6px;
+  border-left: 1px solid rgba(47, 214, 111, 0.3);
+  padding-left: 8px;
+}
+
 /* ─── MAIN LAYOUT ────────────────────────────────── */
 
 .main-layout {

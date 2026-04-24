@@ -43,6 +43,25 @@ It does this by:
 
 ---
 
+## ✨ The 5 Wow Factors
+
+1. **"We don't just find vulnerabilities — we time-travel to when they were introduced"**
+Show a sink node, click it, and the side panel shows: *"This SQL injection was introduced by [Author] on [Date] in commit abc1234, message: 'added search feature'."* No existing tool — OWASP, Snyk, SonarQube — does this in a visual, interactive way.
+
+2. **"Ask it anything in plain English — it understands security intent"**
+Type *"where does user input reach SQL execution?"* — the graph animates the exact tainted path. This isn't keyword search. Gemini Flash understands the security intent and maps it to a live graph traversal. Judges from industry have never seen a conversational interface on top of a taint graph.
+
+3. **"Patch a node and watch your attack surface shrink in real time"**
+Click the vulnerable `cursor.execute` node → mark as patched → the attack path disappears instantly. The graph recomputes live. This demonstrates the business value: *"which single fix eliminates the most risk?"*
+
+4. **"We show blast radius — not just what's vulnerable, but what else was broken by the same change"**
+When you introduced the SQL injection, you also touched 4 other files in the same commit. VulnGraph surfaces this: *"Blast radius: 4 files."* This is the difference between a vulnerability scanner and a security intelligence tool.
+
+5. **"This is a codebase's immune system — it grows with your project"**
+Every new scan re-analyzes the AST. Every commit is tracked. Every patch is simulated. VulnGraph isn't a one-time report — it's a living graph that reflects your security posture in real time. OWASP gives you a PDF. VulnGraph gives you a war room.
+
+---
+
 ## How It Works — Plain English
 
 Imagine your web application is a building. Users enter through the **front door** (HTTP requests). Inside the building there are **dangerous rooms** — places where, if a bad actor gets in, they can steal data (SQL injection), run commands on your server (command injection), or read files they shouldn't (path traversal).

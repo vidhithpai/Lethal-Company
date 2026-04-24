@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import useStore from "../store/useStore";
-import { endpoints } from "../api";
+import { endpoints, normalizeGraph } from "../api";
 
 const RISK_COLORS = {
   critical: "#ff2d55",
@@ -30,7 +30,7 @@ const CWE_LINKS = {
   "CWE-20":  "https://cwe.mitre.org/data/definitions/20.html",
 };
 
-// ─── Sub-component: structured vulnerability analysis card ───────────────────
+// ─── Vulnerability analysis card ─────────────────────────────────────────────
 const VulnAnalysisCard = ({ analysis, loading }) => {
   if (loading) {
     return (
@@ -40,12 +40,9 @@ const VulnAnalysisCard = ({ analysis, loading }) => {
     );
   }
   if (!analysis) return null;
-
   const cweHref = CWE_LINKS[analysis.cwe];
-
   return (
     <div className="vuln-card">
-      {/* Header row: vuln type + CWE badge */}
       <div className="vuln-header">
         <span className="vuln-type">{analysis.vuln_type}</span>
         {analysis.cwe && (
@@ -54,26 +51,18 @@ const VulnAnalysisCard = ({ analysis, loading }) => {
             : <span className="cwe-badge">{analysis.cwe}</span>
         )}
       </div>
-
-      {/* What can an attacker do */}
       <div className="vuln-block">
         <span className="vuln-label">⚠ Impact</span>
         <p className="vuln-text">{analysis.what_it_does}</p>
       </div>
-
-      {/* Root cause */}
       <div className="vuln-block">
         <span className="vuln-label">🔬 Root Cause</span>
         <p className="vuln-text">{analysis.root_cause}</p>
       </div>
-
-      {/* Fix */}
       <div className="vuln-block vuln-fix">
         <span className="vuln-label">✅ Fix</span>
         <p className="vuln-text">{analysis.fix}</p>
       </div>
-
-      {/* Severity reason */}
       {analysis.severity_reason && (
         <div className="vuln-block">
           <span className="vuln-label">📊 Why this rating</span>
@@ -84,30 +73,82 @@ const VulnAnalysisCard = ({ analysis, loading }) => {
   );
 };
 
+// ─── WF1: Time-travel blame callout ──────────────────────────────────────────
+const TimeTravelCard = ({ node }) => {
+  const blame = node.git_blame;
+  const radius = node.blast_radius || [];
+
+  if (!blame || (!blame.author && !blame.commit)) return null;
+
+  const isUncommitted = blame.commit === "uncommitted";
+
+  return (
+    <div className="timetravel-card">
+      <div className="timetravel-header">
+        <span className="timetravel-icon">🕐</span>
+        <span className="timetravel-title">Time-Travel Attribution</span>
+      </div>
+
+      {isUncommitted ? (
+        <p className="timetravel-summary">This vulnerability exists in <strong>uncommitted local changes</strong>.</p>
+      ) : (
+        <p className="timetravel-summary">
+          This {node.type === "sink" ? "vulnerability" : "source"} was introduced by{" "}
+          <strong className="timetravel-author">{blame.author || "unknown"}</strong>
+          {blame.date && <> on <strong className="timetravel-date">{blame.date}</strong></>}
+          {blame.commit && (
+            <> in commit <code className="commit-hash">{blame.commit}</code></>
+          )}
+          {(blame.message || node.commit_message) && (
+            <>: <em className="timetravel-msg">"{blame.message || node.commit_message}"</em></>
+          )}
+        </p>
+      )}
+
+      {radius.length > 0 && (
+        <div className="blast-callout">
+          <span className="blast-callout-label">
+            💥 Blast Radius — <strong>{radius.length}</strong> file{radius.length !== 1 ? "s" : ""} touched in the same commit
+          </span>
+          <ul className="blast-list">
+            {radius.slice(0, 5).map((f) => <li key={f}>{f}</li>)}
+            {radius.length > 5 && (
+              <li className="muted">+{radius.length - 5} more…</li>
+            )}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ─── Main SidePanel ───────────────────────────────────────────────────────────
 const SidePanel = () => {
-  const graph           = useStore((state) => state.graph);
-  const path            = useStore((state) => state.path);
-  const selectedNode    = useStore((state) => state.selectedNode);
-  const explanation     = useStore((state) => state.explanation);
-  const patchNodeLocal  = useStore((state) => state.patchNodeLocal);
+  const graph           = useStore((s) => s.graph);
+  const path            = useStore((s) => s.path);
+  const selectedNode    = useStore((s) => s.selectedNode);
+  const explanation     = useStore((s) => s.explanation);
+  const patchNodeLocal  = useStore((s) => s.patchNodeLocal);
+  const setGraph        = useStore((s) => s.setGraph);
+  const setPath         = useStore((s) => s.setPath);
 
-  const [nodeAnalysis, setNodeAnalysis]   = useState(null);
-  const [loadingAnalysis, setLoadingAnalysis] = useState(false);
+  const [nodeAnalysis, setNodeAnalysis]         = useState(null);
+  const [loadingAnalysis, setLoadingAnalysis]   = useState(false);
+  const [patchSuccess, setPatchSuccess]         = useState(false);
 
-  // Auto-fetch vulnerability analysis when a sink or source is selected
+  // ── Auto-fetch vulnerability analysis when sink/source selected ────────────
   useEffect(() => {
     if (!selectedNode || !["sink", "source"].includes(selectedNode.type)) {
       setNodeAnalysis(null);
       return;
     }
-
     let cancelled = false;
     setLoadingAnalysis(true);
     setNodeAnalysis(null);
+    setPatchSuccess(false);
 
     fetch(endpoints.explainNode, {
-      method: "POST",
+      method:  "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         node_id:   selectedNode.id,
@@ -120,30 +161,41 @@ const SidePanel = () => {
       }),
     })
       .then((r) => r.json())
-      .then((data) => { if (!cancelled) setNodeAnalysis(data); })
-      .catch(() => { if (!cancelled) setNodeAnalysis(null); })
+      .then((d) => { if (!cancelled) setNodeAnalysis(d); })
+      .catch(() => {})
       .finally(() => { if (!cancelled) setLoadingAnalysis(false); });
 
     return () => { cancelled = true; };
   }, [selectedNode?.id]);
 
-  // Build edge sets for attack path highlighting
+  // ── Build active-path edge set ─────────────────────────────────────────────
   const pathEdges = new Set();
   for (let i = 0; i < path.length - 1; i++) {
     pathEdges.add(`${path[i]}->${path[i + 1]}`);
   }
-
   const cves = graph.links.filter((link) => {
-    const source = link.source?.id || link.source;
-    const target = link.target?.id || link.target;
-    return pathEdges.has(`${source}->${target}`);
+    const s = link.source?.id || link.source;
+    const t = link.target?.id || link.target;
+    return pathEdges.has(`${s}->${t}`);
   });
 
+  // ── WF3: Patch — update graph from backend response ────────────────────────
   const patchNode = async () => {
-    if (!selectedNode) return;
+    if (!selectedNode || selectedNode.patched) return;
+
+    // Immediate visual feedback
     patchNodeLocal(selectedNode.id);
+    setPatchSuccess(false);
+
     try {
-      await fetch(endpoints.patchNode(selectedNode.id), { method: "POST" });
+      const res = await fetch(endpoints.patchNode(selectedNode.id), { method: "POST" });
+      if (res.ok) {
+        const payload = await res.json();
+        // Backend returns the new graph — update store so attack paths recompute
+        setGraph(normalizeGraph(payload));
+        setPath([]);           // old path may now be broken — clear it
+        setPatchSuccess(true);
+      }
     } catch (_) {}
   };
 
@@ -169,6 +221,7 @@ const SidePanel = () => {
           <h3 className="section-head">
             <span className="title-icon">🎯</span> Selected Node
           </h3>
+
           <div className="node-card">
             <div className="node-header">
               {badge && (
@@ -213,16 +266,26 @@ const SidePanel = () => {
               </div>
             )}
 
+            {/* WF3: Patch button + live feedback */}
             <button
-              className="cyber-btn patch-btn"
+              className={`cyber-btn patch-btn ${patchSuccess ? "patch-success" : ""}`}
               onClick={patchNode}
               disabled={selectedNode.patched}
             >
-              {selectedNode.patched ? "✓ Patched" : "🔧 Mark as Patched"}
+              {selectedNode.patched
+                ? "✓ Patched — Attack Surface Reduced"
+                : patchSuccess
+                  ? "✓ Graph Recomputed"
+                  : "🔧 Mark as Patched"}
             </button>
+            {patchSuccess && (
+              <p className="patch-notice">
+                ✅ Attack paths through this node have been eliminated from the graph.
+              </p>
+            )}
           </div>
 
-          {/* ── Vulnerability Analysis (AI) ─────────────────────── */}
+          {/* WF2 + WF4: Vulnerability Analysis (AI) */}
           {["sink", "source"].includes(selectedNode.type) && (
             <div className="vuln-section">
               <h4 className="section-head">
@@ -232,55 +295,8 @@ const SidePanel = () => {
             </div>
           )}
 
-          {/* ── Git Blame ────────────────────────────────────────── */}
-          {selectedNode.git_blame && (
-            <div className="blame-section">
-              <h4 className="section-head">
-                <span className="title-icon">🔍</span> Commit Attribution
-              </h4>
-              <div className="blame-card">
-                {selectedNode.git_blame.commit && (
-                  <div className="blame-row">
-                    <span className="label">Commit:</span>
-                    <code className="commit-hash">{selectedNode.git_blame.commit}</code>
-                  </div>
-                )}
-                {selectedNode.git_blame.author && (
-                  <div className="blame-row">
-                    <span className="label">Author:</span>
-                    <span>{selectedNode.git_blame.author}</span>
-                  </div>
-                )}
-                {selectedNode.git_blame.date && (
-                  <div className="blame-row">
-                    <span className="label">Date:</span>
-                    <span>{selectedNode.git_blame.date}</span>
-                  </div>
-                )}
-                {selectedNode.git_blame.message && (
-                  <div className="blame-row">
-                    <span className="label">Message:</span>
-                    <span className="commit-msg">{selectedNode.git_blame.message}</span>
-                  </div>
-                )}
-              </div>
-              {selectedNode.blast_radius?.length > 0 && (
-                <div className="blast-radius">
-                  <span className="label">
-                    💥 Blast Radius ({selectedNode.blast_radius.length} files):
-                  </span>
-                  <ul className="blast-list">
-                    {selectedNode.blast_radius.slice(0, 5).map((f) => (
-                      <li key={f}>{f}</li>
-                    ))}
-                    {selectedNode.blast_radius.length > 5 && (
-                      <li className="muted">+{selectedNode.blast_radius.length - 5} more…</li>
-                    )}
-                  </ul>
-                </div>
-              )}
-            </div>
-          )}
+          {/* WF1 + WF4: Time-travel blame */}
+          <TimeTravelCard node={selectedNode} />
         </div>
       )}
 
