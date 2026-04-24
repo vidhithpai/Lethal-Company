@@ -27,7 +27,12 @@ class GraphEngine:
         self._load_from_json()
 
     def _load_from_json(self) -> None:
-        payload = json.loads(self._config.data_path.read_text(encoding="utf-8"))
+        raw_content = self._config.data_path.read_text(encoding="utf-8")
+        payload = json.loads(raw_content)
+
+        if "dependencies" in payload:
+            from .mapper import map_owasp_report_to_graph
+            payload = map_owasp_report_to_graph(self._config.data_path)
 
         nodes = payload.get("nodes", [])
         edges = payload.get("edges", [])
@@ -114,14 +119,34 @@ class GraphEngine:
 
 _engine: GraphEngine | None = None
 _engine_lock = RLock()
+_backend_dir = Path(__file__).resolve().parents[1]  # backend/
+MOCK_GRAPH_PATH = _backend_dir / "data" / "seed_graph.json"
+GENERATED_GRAPH_PATH = _backend_dir / "data" / "generated_graph.json"
+_active_graph_path: Path = MOCK_GRAPH_PATH
 
 
 def get_engine() -> GraphEngine:
     global _engine
     with _engine_lock:
         if _engine is None:
-            backend_dir = Path(__file__).resolve().parents[1]  # backend/
-            data_path = backend_dir / "data" / "seed_graph.json"
-            _engine = GraphEngine(GraphPaths(data_path=data_path))
+            _engine = GraphEngine(GraphPaths(data_path=_active_graph_path))
         return _engine
+
+
+def set_active_graph_path(data_path: Path) -> None:
+    global _engine, _active_graph_path
+    with _engine_lock:
+        _active_graph_path = data_path
+        PATCHED_NODES.clear()
+        _engine = GraphEngine(GraphPaths(data_path=data_path))
+
+
+def use_mock_graph() -> None:
+    set_active_graph_path(MOCK_GRAPH_PATH)
+
+
+def use_generated_graph() -> None:
+    if not GENERATED_GRAPH_PATH.exists():
+        raise FileNotFoundError("Generated graph not found.")
+    set_active_graph_path(GENERATED_GRAPH_PATH)
 

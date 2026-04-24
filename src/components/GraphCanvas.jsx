@@ -11,8 +11,8 @@ const nodeColorByType = (type) => {
 };
 
 const GraphCanvas = ({ onNodeClick }) => {
-  const graphData = useStore((state) => state.graphData);
-  const attackPath = useStore((state) => state.attackPath);
+  const graph = useStore((state) => state.graph);
+  const path = useStore((state) => state.path);
   const containerRef = useRef(null);
   const [size, setSize] = useState({ width: 300, height: 300 });
 
@@ -32,14 +32,14 @@ const GraphCanvas = ({ onNodeClick }) => {
 
   const pathEdges = useMemo(() => {
     const edges = new Set();
-    for (let i = 0; i < attackPath.length - 1; i += 1) {
-      edges.add(`${attackPath[i]}->${attackPath[i + 1]}`);
+    for (let i = 0; i < path.length - 1; i += 1) {
+      edges.add(`${path[i]}->${path[i + 1]}`);
     }
     return edges;
-  }, [attackPath]);
+  }, [path]);
 
   const clampNodePositions = () => {
-    const nodes = graphData?.nodes || [];
+    const nodes = graph?.nodes || [];
     const padding = 24;
     const minX = -size.width / 2 + padding;
     const maxX = size.width / 2 - padding;
@@ -57,7 +57,7 @@ const GraphCanvas = ({ onNodeClick }) => {
       <ForceGraph2D
         width={size.width}
         height={size.height}
-        graphData={graphData}
+        graphData={graph}
         nodeLabel={(node) => `${node.label || node.id} (${node.type || "Node"})`}
         onNodeClick={(node) => onNodeClick(node)}
         onEngineTick={clampNodePositions}

@@ -1,19 +1,69 @@
 {
-  "nodes": [
-    {"id":"internet","label":"Internet","type":"external","patched":false},
-    {"id":"firewall","label":"Firewall","type":"network","patched":false},
-    {"id":"webserver","label":"Web Server","type":"server","patched":false},
-    {"id":"appserver","label":"App Server","type":"server","patched":false},
-    {"id":"database","label":"Database","type":"data","patched":false},
-    {"id":"cache","label":"Cache","type":"data","patched":false}
-  ],
-  "edges": [
-    {"source":"internet","target":"firewall","cve":"CVE-2023-44487","weight":2.5,"severity":"HIGH"},
-    {"source":"firewall","target":"webserver","cve":"CVE-2024-21626","weight":1.4,"severity":"HIGH"},
-    {"source":"webserver","target":"appserver","cve":"CVE-2023-46604","weight":0.1,"severity":"CRITICAL"},
-    {"source":"appserver","target":"database","cve":"CVE-2024-3400","weight":0.1,"severity":"CRITICAL"},
-    {"source":"webserver","target":"cache","cve":"CVE-2023-4966","weight":0.6,"severity":"CRITICAL"},
-    {"source":"appserver","target":"cache","cve":"CVE-2024-1709","weight":0.2,"severity":"CRITICAL"}
-  ],
-  "path": []
+  "projectInfo": {
+    "name": "Lethal Company Security Audit",
+    "reportDate": "2026-04-24T17:15:51Z",
+    "credits": {
+      "author": "OWASP Dependency-Check",
+      "version": "9.0.9"
+    }
+  },
+  "dependencies": [
+    {
+      "fileName": "uvicorn-0.27.1.jar",
+      "filePath": "C:\\projects\\Lethal-Company\\backend\\uvicorn-0.27.1.jar",
+      "packages": [
+        {
+          "id": "pkg:maven/com.encode/uvicorn@0.27.1"
+        }
+      ],
+      "vulnerabilities": [
+        {
+          "name": "CVE-2024-24786",
+          "severity": "HIGH",
+          "description": "Potential denial of service in HTTP/2 handling",
+          "cvssv3": {
+            "baseScore": 7.5
+          }
+        }
+      ]
+    },
+    {
+      "fileName": "fastapi-0.109.2.jar",
+      "filePath": "C:\\projects\\Lethal-Company\\backend\\fastapi-0.109.2.jar",
+      "packages": [
+        {
+          "id": "pkg:maven/org.tiangolo/fastapi@0.109.2"
+        }
+      ],
+      "vulnerabilities": [
+        {
+          "name": "CVE-2024-24762",
+          "severity": "CRITICAL",
+          "description": "Remote code execution via malformed multipart requests",
+          "cvssv3": {
+            "baseScore": 9.8
+          }
+        }
+      ]
+    },
+    {
+      "fileName": "react-dom-18.2.0.jar",
+      "filePath": "C:\\projects\\Lethal-Company\\frontend\\react-dom-18.2.0.jar",
+      "packages": [
+        {
+          "id": "pkg:npm/react-dom@18.2.0"
+        }
+      ],
+      "vulnerabilities": [
+        {
+          "name": "CVE-2023-41234",
+          "severity": "MEDIUM",
+          "description": "Cross-site scripting in server-side rendering",
+          "cvssv3": {
+            "baseScore": 6.1
+          }
+        }
+      ]
+    }
+  ]
 }

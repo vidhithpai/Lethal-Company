@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-google-generativeai
-fastapi
-uvicorn[standard]
 networkx
+google-generativeai
+python-dotenv
+requests

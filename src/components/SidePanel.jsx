@@ -1,18 +1,19 @@
 import useStore from "../store/useStore";
+import { endpoints } from "../api";
 
 const SidePanel = () => {
-  const graphData = useStore((state) => state.graphData);
-  const attackPath = useStore((state) => state.attackPath);
+  const graph = useStore((state) => state.graph);
+  const path = useStore((state) => state.path);
   const selectedNode = useStore((state) => state.selectedNode);
   const explanation = useStore((state) => state.explanation);
   const patchNodeLocal = useStore((state) => state.patchNodeLocal);
 
   const pathEdges = new Set();
-  for (let i = 0; i < attackPath.length - 1; i += 1) {
-    pathEdges.add(`${attackPath[i]}->${attackPath[i + 1]}`);
+  for (let i = 0; i < path.length - 1; i += 1) {
+    pathEdges.add(`${path[i]}->${path[i + 1]}`);
   }
 
-  const cves = graphData.links.filter((link) => {
+  const cves = graph.links.filter((link) => {
     const source = link.source.id || link.source;
     const target = link.target.id || link.target;
     return pathEdges.has(`${source}->${target}`);
@@ -23,7 +24,7 @@ const SidePanel = () => {
     patchNodeLocal(selectedNode.id);
 
     try {
-      await fetch(`http://localhost:8000/api/graph/patch/${selectedNode.id}`, {
+      await fetch(endpoints.patchNode(selectedNode.id), {
         method: "POST"
       });
     } catch (error) {
