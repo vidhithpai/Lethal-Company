@@ -7,6 +7,7 @@ export const endpoints = {
   highRiskPaths: `${API_BASE}/api/high-risk-paths`,
   patchNode: (nodeId) => `${API_BASE}/api/graph/patch/${encodeURIComponent(nodeId)}`,
   ask: `${API_BASE}/api/query/ask`,
+  explainNode: `${API_BASE}/api/query/explain-node`,
   scan: `${API_BASE}/api/cve/scan`,
   scanUpload: `${API_BASE}/api/cve/scan/upload`,
   scanStatus: `${API_BASE}/api/cve/scan/status`,
