@@ -1,0 +1,12 @@
+{
+  "nodes": [
+    { "id": "user_device", "label": "User Device", "type": "endpoint", "patched": false },
+    { "id": "web_server", "label": "Web Server", "type": "server", "patched": false },
+    { "id": "database", "label": "Database", "type": "database", "patched": false }
+  ],
+  "edges": [
+    { "source": "user_device", "target": "web_server", "cve": "CVE-2024-0001", "weight": 1 },
+    { "source": "web_server", "target": "database", "cve": "CVE-2024-0002", "weight": 1 }
+  ],
+  "path": []
+}
