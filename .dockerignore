@@ -1,0 +1,43 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+*.egg
+
+# ── Node / Vite ───────────────────────────────────────────────────────────────
+node_modules/
+dist/
+.vite/
+*.local
+
+# ── Secrets — NEVER copy into images ─────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Dev tooling ───────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Git ───────────────────────────────────────────────────────────────────────
+# Keep .git OUT of the image — git_history.py uses the HOST git via subprocess
+.git/
+.gitignore
+
+# ── Uploads / temp ───────────────────────────────────────────────────────────
+/tmp/
+*.db
+
+# ── Docker files themselves ───────────────────────────────────────────────────
+docker-compose*.yml
+Dockerfile*
+nginx.conf
+README.md

@@ -218,7 +218,105 @@ Get a free key at: https://aistudio.google.com/apikey
 
 ---
 
-### Running the App
+## 🐳 Running with Docker (Recommended for sharing / other machines)
+
+This is the **one-command** path. Docker handles Python, Node, nginx, and all dependencies automatically.
+
+### Prerequisites
+
+| Tool | Check | Install |
+|------|-------|---------|
+| **Docker** | `docker --version` | https://docs.docker.com/get-docker/ |
+| **Docker Compose** | `docker compose version` | bundled with Docker Desktop |
+
+### Steps
+
+**Step 1 — Set your API key**
+```bash
+# Copy the example file
+cp .env.example .env
+
+# Edit .env and paste your Gemini key
+# GEMINI_API_KEY=your_key_here
+```
+
+**Step 2 — Build and start everything**
+```bash
+docker compose up --build
+```
+
+That's it. First run takes ~2–3 minutes (downloads base images, builds layers). Subsequent runs are fast thanks to Docker layer caching.
+
+**Step 3 — Open the app**
+```
+http://localhost:5173
+```
+
+### What Docker starts
+
+| Container | What it runs | Port |
+|-----------|-------------|------|
+| `vulngraph-backend` | FastAPI + uvicorn | 8001 |
+| `vulngraph-frontend` | nginx serving built React app | 5173 |
+
+### Useful Docker commands
+
+```bash
+# Start in background (detached mode)
+docker compose up --build -d
+
+# See live logs
+docker compose logs -f
+
+# See logs for one service
+docker compose logs -f backend
+
+# Stop everything
+docker compose down
+
+# Stop and delete all data (full reset)
+docker compose down -v
+
+# Rebuild just one service after code changes
+docker compose up --build backend
+docker compose up --build frontend
+```
+
+### Scanning a project inside Docker
+
+The `demo_project/` folder is pre-mounted into the backend container. In the app's scan box, enter:
+```
+./demo_project
+```
+
+To scan **your own project** from another machine, either:
+1. Upload it via the **"Select Project Folder"** button in the UI, or
+2. Add a volume mount in `docker-compose.yml`:
+```yaml
+volumes:
+  - /absolute/path/to/your/project:/app/target_project:ro
+```
+Then scan path: `./target_project`
+
+### Deploying to a server / VM
+
+If the frontend and backend are on different hosts (e.g., backend on `api.example.com`), set the build arg:
+
+```bash
+VITE_API_URL=http://api.example.com:8001 docker compose up --build
+```
+
+Or in `docker-compose.yml` under `frontend.build.args`:
+```yaml
+args:
+  VITE_API_URL: http://your-server-ip:8001
+```
+
+---
+
+### Running the App (Manual — no Docker)
+
+
 
 You need **two terminals** running simultaneously:
 
