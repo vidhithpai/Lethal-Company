@@ -3,7 +3,7 @@ import useStore from "../store/useStore";
 import { API_BASE } from "../api";
 
 export default function UnifiedPanel({
-  selectedNode, attackPath, onPatch, onHighlightPath, onSelectNode
+  selectedNode, attackPath, attackPaths, onPatch, onHighlightPath, onSelectNode
 }) {
   const [activeTab, setActiveTab] = useState("node");
   const [messages, setMessages] = useState([
@@ -196,11 +196,11 @@ export default function UnifiedPanel({
                       background:"#1F2937", borderRadius:6,
                       padding:"8px 10px", marginBottom:6
                     }}>
-                      <span style={{ color: riskColor(p.classification), fontWeight:500 }}>
-                        {p.classification}
+                      <span style={{ color: riskColor(p.risk || p.classification), fontWeight:500 }}>
+                        {p.risk || p.classification}
                       </span>
                       <span style={{ color:"#6B7280", marginLeft:8 }}>
-                        score {p.risk_score}
+                        score {p.score || p.risk_score}
                       </span>
                     </div>
                   ))}
@@ -356,11 +356,41 @@ export default function UnifiedPanel({
                     ))}
                   </div>
                 )}
-                {msg.action && (
+                {msg.action && msg.action.action === "highlight_path" && attackPaths && attackPaths[msg.action.path_index] && (
                   <div style={{
-                    fontSize:10, color:"#34D399", marginTop:4
+                    marginTop:10, background:"#111827", border:"1px solid #374151",
+                    borderRadius:6, padding:"10px 12px"
                   }}>
-                    Graph action triggered: {msg.action.action}
+                    <div style={{ fontSize:10, color:"#34D399", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:6 }}>
+                      ▶ Live Simulation Active
+                    </div>
+                    <div style={{ fontSize:12, color:"#E5E7EB", marginBottom:8 }}>
+                      <strong>Technical Path Trace:</strong><br/>
+                      {attackPaths[msg.action.path_index].source_label} → {attackPaths[msg.action.path_index].sink_label}
+                    </div>
+                    <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+                      {attackPaths[msg.action.path_index].path.slice(0, 4).map((nodeId, idx) => (
+                        <div key={idx} style={{ display:"flex", alignItems:"center", gap:6, fontSize:11, color:"#9CA3AF" }}>
+                          <span style={{ color:"#6B7280" }}>{idx+1}.</span>
+                          <span style={{ fontFamily:"monospace" }}>{nodeId.split(':').pop()}</span>
+                        </div>
+                      ))}
+                      {attackPaths[msg.action.path_index].path.length > 4 && (
+                        <div style={{ fontSize:10, color:"#6B7280", fontStyle:"italic", marginLeft:16 }}>
+                          + {attackPaths[msg.action.path_index].path.length - 4} more hops
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ marginTop:8, paddingTop:8, borderTop:"1px dashed #374151", fontSize:11, color:"#9CA3AF" }}>
+                      Risk Score: {attackPaths[msg.action.path_index].score} | View the 3D graph to see the visual trace.
+                    </div>
+                  </div>
+                )}
+                {msg.action && msg.action.action === "select_node" && (
+                  <div style={{
+                    fontSize:10, color:"#3B82F6", marginTop:4
+                  }}>
+                    ▶ Highlighted node on graph
                   </div>
                 )}
               </div>

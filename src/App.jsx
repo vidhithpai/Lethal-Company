@@ -146,6 +146,7 @@ const App = () => {
           <UnifiedPanel
             selectedNode={selectedNode}
             attackPath={attackPath}
+            attackPaths={attackPaths}
             onPatch={handlePatch}
             onHighlightPath={(idx) => {
               setHighlightedPathIndex(idx);
