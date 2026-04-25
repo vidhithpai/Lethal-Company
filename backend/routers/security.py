@@ -27,15 +27,19 @@ def read_graph():
     communities = detect_security_communities(g)
     paths = compute_attack_paths(limit=500, max_depth=14)
     meta = {
-        "total_nodes": len(built["nodes"]),
-        "total_sources": len([n for n in built["nodes"] if n.get("type") == "source"]),
-        "total_sinks": len([n for n in built["nodes"] if n.get("type") == "sink"]),
+        "total_nodes": len(g.nodes),
+        "total_sources": len([n for _, n in g.nodes(data=True) if n.get("type") == "source"]),
+        "total_sinks": len([n for _, n in g.nodes(data=True) if n.get("type") == "sink"]),
         "total_paths": len(paths),
         "communities_detected": len(set(communities.values())),
         "scanned_project": "Project",
         "scan_time_ms": 150
     }
-    return {"nodes": built["nodes"], "links": built["edges"], "path": [], "meta": meta}
+    
+    # Extract live nodes from graph (since git blame is injected post-build)
+    live_nodes = [dict(data, id=n) for n, data in g.nodes(data=True)]
+    
+    return {"nodes": live_nodes, "links": built["edges"], "path": [], "meta": meta}
 
 
 @router.get("/api/attack-surface")
@@ -74,7 +78,8 @@ def patch_graph_node(node_id: str):
     patch_security_node(node_id)
     invalidate_security_graph_cache()
     built = get_security_graph()
-    return {"nodes": built["nodes"], "links": built["edges"], "path": [], "patch_impact": impact.get("patch_impact")}
+    live_nodes = [dict(data, id=n) for n, data in built["graph"].nodes(data=True)]
+    return {"nodes": live_nodes, "links": built["edges"], "path": [], "patch_impact": impact.get("patch_impact")}
 
 @router.get("/api/communities")
 def read_communities():
