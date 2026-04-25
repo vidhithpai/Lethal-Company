@@ -1,0 +1,11 @@
+{
+  "name": "sample-vulngraph-project",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sample project folder for VulnGraph OWASP scan testing",
+  "dependencies": {
+    "lodash": "4.17.20",
+    "axios": "0.21.1",
+    "express": "4.17.1"
+  }
+}

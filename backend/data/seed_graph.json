@@ -1,0 +1,69 @@
+{
+  "projectInfo": {
+    "name": "Lethal Company Security Audit",
+    "reportDate": "2026-04-24T17:15:51Z",
+    "credits": {
+      "author": "OWASP Dependency-Check",
+      "version": "9.0.9"
+    }
+  },
+  "dependencies": [
+    {
+      "fileName": "uvicorn-0.27.1.jar",
+      "filePath": "C:\\projects\\Lethal-Company\\backend\\uvicorn-0.27.1.jar",
+      "packages": [
+        {
+          "id": "pkg:maven/com.encode/uvicorn@0.27.1"
+        }
+      ],
+      "vulnerabilities": [
+        {
+          "name": "CVE-2024-24786",
+          "severity": "HIGH",
+          "description": "Potential denial of service in HTTP/2 handling",
+          "cvssv3": {
+            "baseScore": 7.5
+          }
+        }
+      ]
+    },
+    {
+      "fileName": "fastapi-0.109.2.jar",
+      "filePath": "C:\\projects\\Lethal-Company\\backend\\fastapi-0.109.2.jar",
+      "packages": [
+        {
+          "id": "pkg:maven/org.tiangolo/fastapi@0.109.2"
+        }
+      ],
+      "vulnerabilities": [
+        {
+          "name": "CVE-2024-24762",
+          "severity": "CRITICAL",
+          "description": "Remote code execution via malformed multipart requests",
+          "cvssv3": {
+            "baseScore": 9.8
+          }
+        }
+      ]
+    },
+    {
+      "fileName": "react-dom-18.2.0.jar",
+      "filePath": "C:\\projects\\Lethal-Company\\frontend\\react-dom-18.2.0.jar",
+      "packages": [
+        {
+          "id": "pkg:npm/react-dom@18.2.0"
+        }
+      ],
+      "vulnerabilities": [
+        {
+          "name": "CVE-2023-41234",
+          "severity": "MEDIUM",
+          "description": "Cross-site scripting in server-side rendering",
+          "cvssv3": {
+            "baseScore": 6.1
+          }
+        }
+      ]
+    }
+  ]
+}
