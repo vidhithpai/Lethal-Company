@@ -10,7 +10,7 @@ from backend.services.code_security_graph import (
     get_current_graph, get_current_attack_paths,
     get_current_high_risk_paths
 )
-from backend.routers.query import _groq_client, AI_AVAILABLE
+from backend.routers.query import _groq_client, AI_AVAILABLE, _cache as ai_query_cache
 
 def _generate_ai_summary(project, sinks_len, high_len, sources_len, files_len):
     if not AI_AVAILABLE or not _groq_client:
@@ -35,8 +35,17 @@ def download_json_report():
     high_risk = get_current_high_risk_paths()
 
     nodes = graph.get("nodes", [])
+    edges = graph.get("links", [])
     sources = [n for n in nodes if n.get("type") == "source"]
     sinks = [n for n in nodes if n.get("type") == "sink"]
+    
+    ai_history = []
+    for key, val in ai_query_cache.items():
+        if "node:" not in key:
+            ai_history.append({
+                "query": key.split(":")[0],
+                "explanation": val.get("explanation", "")
+            })
 
     report = {
         "report_metadata": {
@@ -53,6 +62,8 @@ def download_json_report():
                 len(sources),
                 len(set(n.get("file") for n in nodes if n.get("file")))
             ),
+            "total_nodes_analyzed": len(nodes),
+            "total_data_flows": len(edges),
             "total_vulnerabilities": len(sinks),
             "total_attack_paths": len(paths),
             "high_risk_paths": sum(
@@ -66,6 +77,7 @@ def download_json_report():
                 n.get("file") for n in nodes if n.get("file")
             ))
         },
+        "ai_conversations": ai_history,
         "attack_surface": [
             {
                 "id": n.get("id"),
@@ -149,11 +161,26 @@ def download_html_report():
     graph = get_current_graph()
     paths = get_current_attack_paths()
     nodes = graph.get("nodes", [])
+    edges = graph.get("links", [])
     sinks = [n for n in nodes if n.get("type") == "sink"]
     sources = [n for n in nodes if n.get("type") == "source"]
     high = [p for p in paths if p.get("classification") in ("HIGH","CRITICAL") or p.get("risk") in ("HIGH", "CRITICAL", "high", "critical", "CRITICAL FIX")]
     project = graph.get("meta", {}).get("scanned_project", "unknown")
     generated = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
+    ai_history_html = ""
+    for key, val in ai_query_cache.items():
+        if "node:" not in key:
+            q = key.split(":")[0]
+            ans = val.get("explanation", "")
+            ai_history_html += f"""
+            <div style="background:#F3F4F6; padding:16px; border-radius:8px; margin-bottom:12px;">
+              <div style="font-weight:600; color:#111827; margin-bottom:8px;">Q: {q}</div>
+              <div style="font-size:13px; color:#4B5563; line-height:1.5;">A: {ans}</div>
+            </div>"""
+    
+    if not ai_history_html:
+        ai_history_html = "<div style='color:#6B7280; font-style:italic;'>No AI conversations recorded for this scan.</div>"
 
     ai_nl_summary = _generate_ai_summary(
         project, len(sinks), len(high), len(sources), len(set(n.get("file") for n in nodes if n.get("file")))
@@ -241,23 +268,25 @@ def download_html_report():
     <div class="stat-lbl">Vulnerabilities found</div>
   </div>
   <div class="stat">
-    <div class="stat-num" style="color:#EA580C">{len(high)}</div>
-    <div class="stat-lbl">High/Critical paths</div>
-  </div>
-  <div class="stat">
-    <div class="stat-num" style="color:#D97706">{len(sources)}</div>
+    <div class="stat-num" style="color:#EA580C">{len(sources)}</div>
     <div class="stat-lbl">Entry points exposed</div>
   </div>
   <div class="stat">
-    <div class="stat-num" style="color:#16A34A">
-      {len(set(n.get("file") for n in nodes if n.get("file")))}
-    </div>
-    <div class="stat-lbl">Files analyzed</div>
+    <div class="stat-num" style="color:#D97706">{len(nodes)}</div>
+    <div class="stat-lbl">AST Nodes</div>
+  </div>
+  <div class="stat">
+    <div class="stat-num" style="color:#16A34A">{len(edges)}</div>
+    <div class="stat-lbl">Data Flows</div>
   </div>
 </div>
 <div class="section" style="background:#EFF6FF; border-color:#BFDBFE;">
   <h2 style="color:#1E3A8A; border-bottom-color:#BFDBFE;">AI Executive Summary</h2>
   <p style="margin:0; font-size:14px; line-height:1.6; color:#1E40AF;">{ai_nl_summary}</p>
+</div>
+<div class="section" style="background:#F9FAFB;">
+  <h2>AI Conversation Log</h2>
+  {ai_history_html}
 </div>
 <div class="section">
   <h2>Vulnerabilities — sorted by risk</h2>

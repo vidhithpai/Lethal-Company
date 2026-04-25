@@ -47,8 +47,8 @@ def scan(req: ScanRequest):
         )
 
     # Trigger a fresh scan
-    set_security_root(p)
-    built = get_security_graph(p)
+    from backend.services.code_security_graph import analyze_codebase
+    built = analyze_codebase(str(p))
 
     g = built["graph"]
     nodes = built["nodes"]
@@ -89,6 +89,13 @@ def scan(req: ScanRequest):
     node_list_data = [dict(data, id=n) for n, data in g.nodes(data=True)]
     attack_paths = compute_high_risk_paths(limit=10)
     graph_data = {"nodes": node_list_data}
+    
+    # Update global state so reports get the git-enriched nodes
+    import backend.services.code_security_graph as csg
+    csg._current_graph["nodes"] = node_list_data
+    csg._current_paths = attack_paths
+    csg._current_high_risk = attack_paths
+    
     rag_result = index_graph_findings(graph_data, attack_paths)
     update_graph_summary({
         "total_nodes": len(node_list_data),
@@ -248,6 +255,13 @@ def scan_realworld(req: RealWorldScanRequest):
 
     node_list_data = [dict(data, id=n) for n, data in g.nodes(data=True)]
     graph_data = {"nodes": node_list_data}
+    
+    # Update global state so reports get the git-enriched nodes
+    import backend.services.code_security_graph as csg
+    csg._current_graph["nodes"] = node_list_data
+    csg._current_paths = paths
+    csg._current_high_risk = paths
+    
     rag_result = index_graph_findings(graph_data, paths)
     update_graph_summary({
         "total_nodes": len(node_list_data),
