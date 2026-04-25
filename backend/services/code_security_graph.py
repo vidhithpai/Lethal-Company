@@ -19,9 +19,116 @@ class SecurityGraphConfig:
 _lock = RLock()
 _cache: dict[str, Any] = {"graph": None, "root": None}
 
+COMMUNITY_COLORS = {
+    "authentication_surface": "#F59E0B",   # amber
+    "data_input_surface":     "#10B981",   # green
+    "persistence_layer":      "#EF4444",   # red
+    "execution_surface":      "#DC2626",   # dark red
+    "sanitization_zone":      "#6366F1",   # indigo
+    "application_logic":      "#6B7280",   # gray
+}
+
+def compute_edge_confidence(edge_type: str, source_type: str, target_type: str,
+                             has_direct_assignment: bool, cross_function: bool) -> float:
+    base = 1.0
+    if has_direct_assignment and not cross_function:
+        base = 0.95
+    elif not cross_function:
+        base = 0.85
+    elif cross_function:
+        base = 0.65
+
+    sink_multipliers = {
+        "sql_execution": 1.0,
+        "cmd_execution": 1.0,
+        "file_write": 0.9,
+        "deserialization": 0.95,
+        "eval_exec": 1.0,
+    }
+    base *= sink_multipliers.get(target_type, 0.8)
+
+    source_multipliers = {
+        "http_input": 1.0,
+        "env_input": 0.85,
+        "file_input": 0.80,
+        "cli_input": 0.75,
+    }
+    base *= source_multipliers.get(source_type, 0.8)
+    return round(min(base, 1.0), 2)
+
+def detect_security_communities(G: nx.DiGraph) -> dict[str, str]:
+    communities = {}
+    for node_id, attrs in G.nodes(data=True):
+        label = attrs.get("label", "").lower()
+        node_type = attrs.get("type", "")
+        sink_kind = attrs.get("sink_kind", "")
+        source_kind = attrs.get("source_kind", "")
+
+        if "auth" in label or "login" in label or "password" in label or "token" in label:
+            communities[node_id] = "authentication_surface"
+        elif node_type == "source" and source_kind in ("http_input", "form_input"):
+            communities[node_id] = "data_input_surface"
+        elif sink_kind in ("sql_execution",):
+            communities[node_id] = "persistence_layer"
+        elif sink_kind in ("cmd_execution", "eval_exec"):
+            communities[node_id] = "execution_surface"
+        elif node_type == "sanitizer":
+            communities[node_id] = "sanitization_zone"
+        elif node_type == "source":
+            communities[node_id] = "data_input_surface"
+        else:
+            communities[node_id] = "application_logic"
+    return communities
+
+def compute_patch_impact(G: nx.DiGraph, node_id: str, all_paths: list[dict]) -> dict:
+    eliminated = []
+    mitigated = []
+    unaffected = []
+    for path_info in all_paths:
+        path_nodes = path_info.get("path", [])
+        if node_id in path_nodes:
+            if path_nodes[0] == node_id or path_nodes[-1] == node_id:
+                eliminated.append(path_info)
+            else:
+                mitigated.append(path_info)
+        else:
+            unaffected.append(path_info)
+
+    high_risk_eliminated = [p for p in eliminated if p.get("classification") == "HIGH" or p.get("risk") == "HIGH"]
+
+    return {
+        "node_id": node_id,
+        "patch_impact": {
+            "eliminated_paths": len(eliminated),
+            "mitigated_paths": len(mitigated),
+            "unaffected_paths": len(unaffected),
+            "high_risk_eliminated": len(high_risk_eliminated),
+            "impact_score": round((len(eliminated) * 2 + len(mitigated)) / max(len(all_paths), 1) * 10, 1),
+            "recommendation": _patch_recommendation(len(eliminated), len(high_risk_eliminated), len(all_paths))
+        }
+    }
+
+def _patch_recommendation(eliminated: int, high_risk: int, total: int) -> str:
+    if high_risk > 0:
+        return f"CRITICAL FIX — eliminates {high_risk} HIGH-risk path(s)"
+    elif eliminated > total * 0.5:
+        return f"HIGH PRIORITY — eliminates {eliminated}/{total} attack paths"
+    elif eliminated > 0:
+        return f"MEDIUM PRIORITY — eliminates {eliminated} path(s)"
+    else:
+        return "LOW PRIORITY — patching this node has limited impact"
+
 PATCHED_SECURITY_NODES: dict[str, bool] = {}
 PATCHED_NODES = PATCHED_SECURITY_NODES
 _ROOT_OVERRIDE: Path | None = None
+
+_current_graph = {"nodes": [], "links": [], "meta": {}}
+_current_paths = []
+_current_high_risk = []
+
+def get_current_graph(): return _current_graph
+def get_current_attack_paths(): return _current_paths
+def get_current_high_risk_paths(): return _current_high_risk
 
 
 def invalidate_security_graph_cache() -> None:
@@ -228,25 +335,54 @@ class _TaintVisitor(ast.NodeVisitor):
         self._add_node(nid, ntype="function", label=f"{name}()", lineno=lineno, col=col)
         return nid
 
-    def _add_node(self, node_id: str, *, ntype: str, label: str, lineno: int, col: int) -> None:
+    def _add_node(self, node_id: str, *, ntype: str, label: str, lineno: int, col: int, kind: str = "") -> None:
         if node_id in self.g:
             return
-        self.g.add_node(
-            node_id,
-            id=node_id,
-            type=ntype,
-            label=label,
-            file=str(self.file_path),
-            line=lineno,
-            col=col,
-        )
+        attrs = {
+            "id": node_id,
+            "type": ntype,
+            "label": label,
+            "file": str(self.file_path),
+            "line": lineno,
+            "col": col,
+        }
+        if kind and ntype == "source":
+            attrs["source_kind"] = kind
+        elif kind and ntype == "sink":
+            attrs["sink_kind"] = kind
+        self.g.add_node(node_id, **attrs)
 
     def _expr_to_node(self, expr: ast.AST, *, fallback_label: str, ntype: str) -> str:
         lineno = getattr(expr, "lineno", 1)
         col = getattr(expr, "col_offset", 0)
         label = _qualname(expr) or fallback_label
         nid = _node_id(self.file_path, lineno, col, ntype, label)
-        self._add_node(nid, ntype=ntype, label=label, lineno=lineno, col=col)
+        
+        kind = ""
+        if ntype == "source":
+            lbl = label.lower()
+            if any(x in lbl for x in ["request", "body", "query", "path", "form", "header", "cookie"]):
+                kind = "http_input"
+            elif "os.environ" in lbl or "os.getenv" in lbl:
+                kind = "env_input"
+            elif "read" in lbl or "open" in lbl:
+                kind = "file_input"
+            else:
+                kind = "cli_input"
+        elif ntype == "sink":
+            lbl = label.lower()
+            if "execute" in lbl:
+                kind = "sql_execution"
+            elif "subprocess" in lbl or "os.system" in lbl:
+                kind = "cmd_execution"
+            elif "write" in lbl or "open" in lbl or "rmtree" in lbl or "move" in lbl:
+                kind = "file_write"
+            elif "pickle" in lbl or "yaml" in lbl:
+                kind = "deserialization"
+            elif "eval" in lbl or "exec" in lbl:
+                kind = "eval_exec"
+
+        self._add_node(nid, ntype=ntype, label=label, lineno=lineno, col=col, kind=kind)
         return nid
 
     def _var_to_node(self, name: str, *, lineno: int, col: int) -> str:
@@ -413,20 +549,38 @@ def build_security_graph(config: SecurityGraphConfig) -> dict[str, Any]:
         if is_patched and nid in g:
             g.remove_node(nid)
 
+    communities = detect_security_communities(g)
     for nid in list(g.nodes):
         g.nodes[nid]["patched"] = bool(PATCHED_SECURITY_NODES.get(nid, False))
         if "id" not in g.nodes[nid]:
             g.nodes[nid]["id"] = nid
+        comm = communities.get(nid, "application_logic")
+        g.nodes[nid]["community"] = comm
+        g.nodes[nid]["community_color"] = COMMUNITY_COLORS.get(comm, "#6B7280")
 
     nodes = [dict(data) for _, data in g.nodes(data=True)]
     edges = []
     for u, v, data in g.edges(data=True):
+        u_node = g.nodes[u]
+        v_node = g.nodes[v]
+        edge_type = data.get("type", "dataflow")
+        source_kind = u_node.get("source_kind", "")
+        sink_kind = v_node.get("sink_kind", "")
+        reason = data.get("reason", "")
+        has_direct_assignment = (reason == "assigned")
+        cross_function = (edge_type == "call" or reason == "calls")
+
+        conf = compute_edge_confidence(edge_type, source_kind, sink_kind, has_direct_assignment, cross_function)
+        data["confidence"] = conf
+
         edges.append({
             "source": u,
             "target": v,
-            "type": data.get("type", "dataflow"),
-            "reason": data.get("reason", ""),
+            "type": edge_type,
+            "reason": reason,
             "weight": float(data.get("weight", 1.0)),
+            "confidence": conf,
+            "on_attack_path": False
         })
 
     return {"graph": g, "nodes": nodes, "edges": edges, "sources": sources, "sinks": sinks, "sanitizers": sanitizers}
@@ -448,9 +602,20 @@ def get_security_graph(root: Path | None = None) -> dict[str, Any]:
 
 
 def analyze_codebase(project_path: str) -> dict[str, Any]:
+    global _current_graph, _current_paths, _current_high_risk
     p = Path(project_path).resolve()
     set_security_root(p)
-    return get_security_graph(p)
+    
+    res = get_security_graph(p)
+    _current_graph = {
+        "nodes": res.get("nodes", []),
+        "links": res.get("edges", []),
+        "meta": {"scanned_project": p.name}
+    }
+    _current_paths = compute_attack_paths()
+    _current_high_risk = compute_high_risk_paths()
+    
+    return res
 
 
 def compute_attack_surface() -> list[dict[str, Any]]:
@@ -478,6 +643,15 @@ def compute_attack_paths(limit: int = 50, max_depth: int = 8) -> list[dict[str, 
                     path_sanitizers = [n for n in p if n in sanitizer_nodes]
                     sanitizer_bonus = len(path_sanitizers) * 2.0
                     score = max(0.0, sink_sev - length_penalty - sanitizer_bonus)
+                    
+                    # Compute average confidence
+                    path_confs = []
+                    for i in range(len(p) - 1):
+                        edge_data = g.get_edge_data(p[i], p[i+1])
+                        if edge_data and "confidence" in edge_data:
+                            path_confs.append(edge_data["confidence"])
+                    avg_confidence = round(sum(path_confs) / len(path_confs), 2) if path_confs else 0.5
+
                     results.append({
                         "source": s,
                         "sink": t,
@@ -487,6 +661,7 @@ def compute_attack_paths(limit: int = 50, max_depth: int = 8) -> list[dict[str, 
                         "sanitizers_on_path": path_sanitizers,
                         "sink_label": g.nodes[t].get("label", t),
                         "source_label": g.nodes[s].get("label", s),
+                        "avg_confidence": avg_confidence,
                     })
                     if len(results) >= limit:
                         return results

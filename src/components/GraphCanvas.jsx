@@ -4,40 +4,82 @@ import SpriteText from "three-spritetext";
 import * as THREE from "three";
 import useStore from "../store/useStore";
 
-// ─── Node color map (identical to previous 2D version) ───────────────────────
-const NODE_COLORS = {
-  source:       "#22c55e",
-  sink:         "#ef4444",
-  intermediate: "#f59e0b",
-  function:     "#3b82f6",
-  sanitizer:    "#a78bfa",
-  default:      "#6b7280",
-};
-
-// Risk ring / glow tint colours for sink nodes
 const RISK_COLORS = {
-  critical: "#ef4444",
-  high:     "#f97316",
-  medium:   "#eab308",
-  low:      "#22c55e",
+  critical: "#EF4444",
+  high: "#F97316",
+  medium: "#F59E0B",
+  low: "#10B981"
+};
+const getNodeColor = (node) => {
+  if (node.patched) return '#4B5563';
+  const typeColors = {
+    source: '#10B981',
+    sink: '#EF4444',
+    intermediate: '#F59E0B',
+    sanitizer: '#6366F1',
+    function: '#3B82F6',
+  };
+
+  // Only use community color if it's a specific community, otherwise prefer type color
+  if (node.community && node.community !== "application_logic" && node.community_color) {
+    return node.community_color;
+  }
+
+  return typeColors[node.type] || '#6B7280';
 };
 
-const nodeColorByType = (type) => NODE_COLORS[type] || NODE_COLORS.default;
+const getNodeSize = (node) => {
+  const base = 6;
+  const riskMultiplier = { CRITICAL: 2.5, HIGH: 2.0, MEDIUM: 1.5, LOW: 1.0, critical: 2.5, high: 2.0, medium: 1.5, low: 1.0 };
+  const risk = node.risk || 'LOW';
+  const confidence = node.confidence || 0.5;
+  return base * (riskMultiplier[risk] || 1.0) * (0.5 + confidence * 0.5);
+};
 
-const LEGEND = [
-  { label: "Source",    color: NODE_COLORS.source },
-  { label: "Sink",      color: NODE_COLORS.sink },
-  { label: "Taint",     color: NODE_COLORS.intermediate },
-  { label: "Function",  color: NODE_COLORS.function },
-  { label: "Sanitizer", color: NODE_COLORS.sanitizer },
-];
+const getEdgeColor = (link, isOnPath) => {
+  if (link.patched) return '#374151';
+  if (isOnPath || link.on_attack_path) {
+    const conf = link.confidence || 0.7;
+    return `rgba(239, 68, 68, ${0.4 + conf * 0.6})`;
+  }
+  const conf = link.confidence || 0.7;
+  return `rgba(107, 114, 128, ${0.3 + conf * 0.4})`;
+};
+
+const GraphLegend = () => (
+  <div style={{
+    position: 'absolute', bottom: 16, left: 16,
+    background: 'rgba(17,24,39,0.92)',
+    border: '1px solid #374151',
+    borderRadius: 8, padding: '10px 14px',
+    fontSize: 11, color: '#D1D5DB', zIndex: 10
+  }}>
+    <div style={{fontWeight:600, marginBottom:6, color:'#F9FAFB'}}>
+      Graph legend
+    </div>
+    {[
+      {color:'#10B981', label:'Source (entry point)'},
+      {color:'#EF4444', label:'Sink (dangerous op)'},
+      {color:'#F59E0B', label:'Intermediate / tainted'},
+      {color:'#6366F1', label:'Sanitizer (reduces risk)'},
+      {color:'#4B5563', label:'Patched node'},
+    ].map(({color, label}) => (
+      <div key={label} style={{display:'flex',alignItems:'center',gap:6,marginBottom:3}}>
+        <div style={{width:10,height:10,borderRadius:'50%',background:color,flexShrink:0}}/>
+        <span>{label}</span>
+      </div>
+    ))}
+    <div style={{marginTop:6,paddingTop:6,borderTop:'1px solid #374151',color:'#9CA3AF'}}>
+      Edge opacity = confidence score
+    </div>
+  </div>
+);
 
 // ─── Custom Three.js object per node ─────────────────────────────────────────
-// Returns a group containing a sphere + floating label sprite.
 function buildNodeObject(node, isOnPath) {
   const group = new THREE.Group();
-  const radius = isOnPath ? 5 : node.patched ? 4 : 3.5;
-  const color  = node.patched ? "#4a5568" : nodeColorByType(node.type);
+  const radius = getNodeSize(node) / 2;
+  const color  = getNodeColor(node);
 
   // Sphere
   const geometry = new THREE.SphereGeometry(radius, 16, 16);
@@ -49,10 +91,11 @@ function buildNodeObject(node, isOnPath) {
   group.add(new THREE.Mesh(geometry, material));
 
   // Risk ring shell for sinks (emissive shell slightly larger)
-  if (node.type === "sink" && node.risk && RISK_COLORS[node.risk]) {
+  if (node.type === "sink" && node.risk) {
+    const riskCol = RISK_COLORS[node.risk.toLowerCase()] || "#ef4444";
     const ringGeo = new THREE.SphereGeometry(radius + 1.5, 16, 16);
     const ringMat = new THREE.MeshLambertMaterial({
-      color: RISK_COLORS[node.risk],
+      color: riskCol,
       transparent: true,
       opacity: 0.18,
       wireframe: false,
@@ -177,7 +220,7 @@ const GraphCanvas = ({ onNodeClick }) => {
         onNodeClick={(node) => onNodeClick(node)}
 
         // ── Node size (used by force engine for collision) ──────────────────
-        nodeVal={(node) => (pathNodeSet.has(node.id) ? 5 : node.patched ? 4 : 3.5)}
+        nodeVal={(node) => getNodeSize(node) / 2}
 
         // ── Edge rendering ──────────────────────────────────────────────────
         linkWidth={(link) => {
@@ -188,10 +231,7 @@ const GraphCanvas = ({ onNodeClick }) => {
         linkColor={(link) => {
           const s = link.source?.id || link.source;
           const t = link.target?.id || link.target;
-          if (pathEdgeSet.has(`${s}->${t}`)) return "#ef4444";
-          if (link.type === "call")       return "#3b82f666";
-          if (link.type === "dependency") return "#06b6d466";
-          return "#1e3a5f";
+          return getEdgeColor(link, pathEdgeSet.has(`${s}->${t}`));
         }}
         linkOpacity={0.7}
 
@@ -212,15 +252,7 @@ const GraphCanvas = ({ onNodeClick }) => {
         cooldownTicks={120}
       />
 
-      {/* Legend overlay — CSS-only, unchanged from 2D version */}
-      <div className="graph-legend">
-        {LEGEND.map(({ label, color }) => (
-          <div key={label} className="legend-item">
-            <div className="legend-dot" style={{ background: color }} />
-            <span>{label}</span>
-          </div>
-        ))}
-      </div>
+      <GraphLegend />
     </div>
   );
 };

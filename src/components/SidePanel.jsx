@@ -136,6 +136,19 @@ const SidePanel = () => {
   const [loadingAnalysis, setLoadingAnalysis]   = useState(false);
   const [patchSuccess, setPatchSuccess]         = useState(false);
 
+  const [nodeContext, setNodeContext] = useState(null);
+
+  useEffect(() => {
+    if (selectedNode?.id) {
+      Promise.all([
+        fetch(`${import.meta.env.VITE_API_URL || "http://127.0.0.1:8001"}/api/node/context?node_id=${encodeURIComponent(selectedNode.id)}`).then(r => r.json()),
+        fetch(`${import.meta.env.VITE_API_URL || "http://127.0.0.1:8001"}/api/node/patch-impact?node_id=${encodeURIComponent(selectedNode.id)}`).then(r => r.json())
+      ]).then(([ctx, impact]) => {
+        setNodeContext({ ...ctx, patch_impact: impact.patch_impact });
+      }).catch(() => setNodeContext(null));
+    }
+  }, [selectedNode]);
+
   // ── Auto-fetch vulnerability analysis when sink/source selected ────────────
   useEffect(() => {
     if (!selectedNode || !["sink", "source"].includes(selectedNode.type)) {
@@ -168,17 +181,6 @@ const SidePanel = () => {
     return () => { cancelled = true; };
   }, [selectedNode?.id]);
 
-  // ── Build active-path edge set ─────────────────────────────────────────────
-  const pathEdges = new Set();
-  for (let i = 0; i < path.length - 1; i++) {
-    pathEdges.add(`${path[i]}->${path[i + 1]}`);
-  }
-  const cves = graph.links.filter((link) => {
-    const s = link.source?.id || link.source;
-    const t = link.target?.id || link.target;
-    return pathEdges.has(`${s}->${t}`);
-  });
-
   // ── WF3: Patch — update graph from backend response ────────────────────────
   const patchNode = async () => {
     if (!selectedNode || selectedNode.patched) return;
@@ -191,7 +193,6 @@ const SidePanel = () => {
       const res = await fetch(endpoints.patchNode(selectedNode.id), { method: "POST" });
       if (res.ok) {
         const payload = await res.json();
-        // Backend returns the new graph — update store so attack paths recompute
         setGraph(normalizeGraph(payload));
         setPath([]);           // old path may now be broken — clear it
         setPatchSuccess(true);
@@ -206,119 +207,159 @@ const SidePanel = () => {
 
   return (
     <aside className="side-panel">
-
-      {/* ── AI Query Explanation ─────────────────────────────────── */}
-      <div className="panel-section">
-        <h2 className="panel-title">
-          <span className="title-icon">🤖</span> AI Analysis
-        </h2>
-        <p className="explanation">{explanation || "Ask a query or click a node to analyze."}</p>
-      </div>
-
-      {/* ── Selected Node ────────────────────────────────────────── */}
-      {selectedNode && (
+      {!selectedNode && (
         <div className="panel-section">
-          <h3 className="section-head">
-            <span className="title-icon">🎯</span> Selected Node
-          </h3>
-
-          <div className="node-card">
-            <div className="node-header">
-              {badge && (
-                <span
-                  className="type-badge"
-                  style={{
-                    background: badge.color + "22",
-                    color: badge.color,
-                    border: `1px solid ${badge.color}44`,
-                  }}
-                >
-                  {badge.label}
-                </span>
-              )}
-              {selectedNode.risk && (
-                <span className="risk-badge" style={{ color: riskColor }}>
-                  ● {(selectedNode.risk || "").toUpperCase()}
-                </span>
-              )}
-            </div>
-
-            <div className="node-label">{selectedNode.label || selectedNode.id}</div>
-
-            {selectedNode.file && (
-              <div className="node-meta">
-                <span className="meta-key">File:</span>
-                <span className="meta-val">{selectedNode.file.split("/").slice(-2).join("/")}</span>
-              </div>
-            )}
-            {selectedNode.line && (
-              <div className="node-meta">
-                <span className="meta-key">Line:</span>
-                <span className="meta-val">{selectedNode.line}</span>
-              </div>
-            )}
-            {selectedNode.severity && (
-              <div className="node-meta">
-                <span className="meta-key">Severity:</span>
-                <span className="meta-val" style={{ color: riskColor }}>
-                  {selectedNode.severity}/10
-                </span>
-              </div>
-            )}
-
-            {/* WF3: Patch button + live feedback */}
-            <button
-              className={`cyber-btn patch-btn ${patchSuccess ? "patch-success" : ""}`}
-              onClick={patchNode}
-              disabled={selectedNode.patched}
-            >
-              {selectedNode.patched
-                ? "✓ Patched — Attack Surface Reduced"
-                : patchSuccess
-                  ? "✓ Graph Recomputed"
-                  : "🔧 Mark as Patched"}
-            </button>
-            {patchSuccess && (
-              <p className="patch-notice">
-                ✅ Attack paths through this node have been eliminated from the graph.
-              </p>
-            )}
-          </div>
-
-          {/* WF2 + WF4: Vulnerability Analysis (AI) */}
-          {["sink", "source"].includes(selectedNode.type) && (
-            <div className="vuln-section">
-              <h4 className="section-head">
-                <span className="title-icon">🧠</span> Vulnerability Analysis
-              </h4>
-              <VulnAnalysisCard analysis={nodeAnalysis} loading={loadingAnalysis} />
-            </div>
-          )}
-
-          {/* WF1 + WF4: Time-travel blame */}
-          <TimeTravelCard node={selectedNode} />
+          <h2 className="panel-title">
+            <span className="title-icon">🤖</span> AI Analysis
+          </h2>
+          <p className="explanation">{explanation || "Ask a query or click a node to analyze."}</p>
         </div>
       )}
 
-      {/* ── Attack Path Edges ────────────────────────────────────── */}
-      <div className="panel-section">
-        <h3 className="section-head">
-          <span className="title-icon">⚡</span> Attack Path Edges
-          {cves.length > 0 && <span className="count-badge">{cves.length}</span>}
-        </h3>
-        <ul className="cve-list">
-          {cves.length ? (
-            cves.map((item, idx) => (
-              <li key={`${item.source}-${item.target}-${idx}`}>
-                <span className="edge-type">{item.type || "dataflow"}</span>
-                <strong className="edge-reason">{item.reason || ""}</strong>
-              </li>
-            ))
-          ) : (
-            <li className="muted">No active attack path selected.</li>
+      {selectedNode && (
+        <>
+          {/* SECTION 1 — Node identity */}
+          <div className="panel-section">
+            <h3 className="section-head">
+              <span className="title-icon">🎯</span> Node Identity
+            </h3>
+
+            <div className="node-card">
+              <div className="node-header">
+                {badge && (
+                  <span
+                    className="type-badge"
+                    style={{
+                      background: badge.color + "22",
+                      color: badge.color,
+                      border: `1px solid ${badge.color}44`,
+                    }}
+                  >
+                    {badge.label}
+                  </span>
+                )}
+                {selectedNode.risk && (
+                  <span className="risk-badge" style={{ color: riskColor }}>
+                    ● {(selectedNode.risk || "").toUpperCase()}
+                  </span>
+                )}
+              </div>
+
+              <div className="node-label">{selectedNode.label || selectedNode.id}</div>
+
+              {selectedNode.file && (
+                <div className="node-meta">
+                  <span className="meta-key">File:</span>
+                  <span className="meta-val">{selectedNode.file.split("/").slice(-2).join("/")}:{selectedNode.line}</span>
+                </div>
+              )}
+              {selectedNode.community && (
+                <div className="node-meta">
+                  <span className="meta-key">Community:</span>
+                  <span className="meta-val" style={{display:'flex', alignItems:'center', gap:4}}>
+                    <div style={{width:8,height:8,borderRadius:'50%',background:selectedNode.community_color}}/>
+                    {selectedNode.community}
+                  </span>
+                </div>
+              )}
+              {selectedNode.confidence && (
+                <div className="node-meta">
+                  <span className="meta-key">Taint confidence:</span>
+                  <span className="meta-val">{Math.round(selectedNode.confidence * 100)}%</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* SECTION 2 — Upstream sources */}
+          <div className="panel-section">
+            <h3 className="section-head"><span className="title-icon">⬆️</span> Upstream sources</h3>
+            <p className="explanation" style={{marginBottom: 8}}>{nodeContext?.upstream?.description || "Loading..."}</p>
+            {nodeContext?.upstream?.sources && (
+              <ul className="cve-list">
+                {nodeContext.upstream.sources.map((s, i) => (
+                  <li key={i}>{s.label || s.id || s}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* SECTION 3 — Downstream sinks */}
+          <div className="panel-section">
+            <h3 className="section-head"><span className="title-icon">⬇️</span> Downstream sinks</h3>
+            <p className="explanation" style={{marginBottom: 8}}>{nodeContext?.downstream?.description || "Loading..."}</p>
+            {nodeContext?.downstream?.sinks && (
+              <ul className="cve-list">
+                {nodeContext.downstream.sinks.map((s, i) => (
+                  <li key={i}>{s.label || s.id || s} {s.risk ? `[${s.risk}]` : ""}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* SECTION 4 — Attack paths through this node */}
+          <div className="panel-section">
+            <h3 className="section-head"><span className="title-icon">⚡</span> Attack paths through this node</h3>
+            {nodeContext?.attack_paths_through && nodeContext.attack_paths_through.length > 0 ? (
+              <ul className="cve-list">
+                {nodeContext.attack_paths_through.map((p, i) => (
+                  <li key={i}>
+                    Path {i+1}: {p.source_label} → ... → {p.sink_label} [{p.risk || p.classification}, score: {p.score}]
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="explanation">No critical paths pass through this node.</p>
+            )}
+          </div>
+
+          {/* SECTION 5 — Patch impact */}
+          <div className="panel-section">
+            <h3 className="section-head"><span className="title-icon">🔧</span> Patch impact</h3>
+            <div className="node-card" style={{marginTop: 8}}>
+              {nodeContext?.patch_impact && (
+                <>
+                  <div className="node-meta">
+                    <span className="meta-key">Impact score:</span>
+                    <span className="meta-val">Patching eliminates {nodeContext.patch_impact.eliminated_paths} attack paths</span>
+                  </div>
+                  <div className="node-meta" style={{marginBottom: 12}}>
+                    <span className="meta-key">Recommendation:</span>
+                    <span className="meta-val" style={{fontWeight: 'bold', color: '#ff6b35'}}>{nodeContext.patch_impact.recommendation}</span>
+                  </div>
+                </>
+              )}
+              <button
+                className={`cyber-btn patch-btn ${patchSuccess ? "patch-success" : ""}`}
+                onClick={patchNode}
+                disabled={selectedNode.patched}
+              >
+                {selectedNode.patched
+                  ? "✓ Patched"
+                  : patchSuccess
+                    ? "✓ Graph Recomputed"
+                    : "Simulate patch"}
+              </button>
+            </div>
+          </div>
+
+          {/* SECTION 6 — Git blame */}
+          {(selectedNode.git_blame || nodeContext?.blast_radius) && (
+            <div className="panel-section">
+              <h3 className="section-head"><span className="title-icon">🕐</span> Git Blame</h3>
+              <TimeTravelCard node={{...selectedNode, blast_radius: nodeContext?.blast_radius?.files_in_commit || selectedNode.blast_radius || []}} />
+            </div>
           )}
-        </ul>
-      </div>
+
+          {/* SECTION 7 — AI explanation */}
+          {["sink", "source"].includes(selectedNode.type) && (
+            <div className="panel-section">
+              <h3 className="section-head"><span className="title-icon">🧠</span> AI Analysis</h3>
+              <VulnAnalysisCard analysis={nodeAnalysis} loading={loadingAnalysis} />
+            </div>
+          )}
+        </>
+      )}
     </aside>
   );
 };

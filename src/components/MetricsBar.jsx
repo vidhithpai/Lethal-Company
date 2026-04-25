@@ -1,9 +1,20 @@
 import { useEffect, useState } from "react";
 import useStore from "../store/useStore";
+import { API_BASE } from "../api";
 
-const MetricsBar = () => {
+const MetricsBar = ({ onScan }) => {
   const graph = useStore((state) => state.graph);
   const loading = useStore((state) => state.loading);
+
+  const downloadReport = (format) => {
+    const url = `${API_BASE}/api/report/${format}`;
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `vulngraph_report.${format}`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   const [metrics, setMetrics] = useState({
     nodes: 0,
@@ -86,6 +97,36 @@ const MetricsBar = () => {
             <span className="scan-time">Last update: {metrics.time}</span>
           </span>
         )}
+      </div>
+      <div style={{ display:"flex", gap:8, marginLeft: "auto" }}>
+        <button
+          onClick={onScan}
+          style={{
+            padding:"7px 14px", background:"#10B981",
+            color:"#fff", border:"none", borderRadius:6,
+            cursor:"pointer", fontSize:12, fontWeight:600,
+            display: "flex", alignItems: "center", gap: "6px"
+          }}>
+          <span>⚡</span> Scan New Project
+        </button>
+        <button
+          onClick={() => downloadReport("html")}
+          style={{
+            padding:"7px 14px", background:"#1D4ED8",
+            color:"#fff", border:"none", borderRadius:6,
+            cursor:"pointer", fontSize:12, fontWeight:500
+          }}>
+          Download report (HTML)
+        </button>
+        <button
+          onClick={() => downloadReport("json")}
+          style={{
+            padding:"7px 14px", background:"#374151",
+            color:"#fff", border:"none", borderRadius:6,
+            cursor:"pointer", fontSize:12, fontWeight:500
+          }}>
+          Export JSON
+        </button>
       </div>
     </div>
   );
