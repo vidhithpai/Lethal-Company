@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 import json
 
-import google.generativeai as genai
+# import google.generativeai as genai
+from groq import Groq
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -16,13 +17,25 @@ _cache: dict[str, dict] = {}
 _node_cache: dict[str, dict] = {}
 _graph_summary = {}  # Updated after each scan
 
+# --- Gemini Fallback (Commented out) ---
+# try:
+#     genai.configure(api_key=os.getenv("GEMINI_API_KEY", ""))
+#     _model = genai.GenerativeModel("gemini-2.0-flash")
+#     AI_AVAILABLE = True
+# except Exception:
+#     AI_AVAILABLE = False
+#     _model = None
+# ---------------------------------------
+
+# --- Groq Implementation ---
 try:
-    genai.configure(api_key=os.getenv("GEMINI_API_KEY", ""))
-    _model = genai.GenerativeModel("gemini-2.0-flash")
-    AI_AVAILABLE = True
+    groq_api_key = os.getenv("GROQ_API_KEY", "")
+    _groq_client = Groq(api_key=groq_api_key) if groq_api_key else None
+    AI_AVAILABLE = bool(_groq_client)
 except Exception:
     AI_AVAILABLE = False
-    _model = None
+    _groq_client = None
+# ---------------------------
 
 
 class QueryRequest(BaseModel):
@@ -63,29 +76,9 @@ def ask_query(req: QueryRequest):
     if not retrieved:
         return fallback
 
-    # --- HACKATHON DEMO BYPASS FOR API QUOTAS ---
-    lower_query = req.query.lower()
-    if "show" in lower_query and ("attack" in lower_query or "path" in lower_query or "injection" in lower_query):
-        return {
-            "explanation": "Here is the highest risk code injection attack path found in the scan. This flow traces untrusted user input directly into an execution sink without proper sanitization.",
-            "intent": "rag_grounded",
-            "action": {"action": "highlight_path", "path_index": 0},
-            "retrieved_docs": retrieved[:3],
-            "context_used": len(retrieved)
-        }
-    if "who introduced" in lower_query:
-        return {
-            "explanation": "Based on the git blame history, the vulnerability was introduced by 'admin' in commit `a1b2c3d`. The commit message was 'Added dynamic input handling'.",
-            "intent": "rag_grounded",
-            "action": {"action": "select_node", "node_id": None},
-            "retrieved_docs": retrieved[:3],
-            "context_used": len(retrieved)
-        }
-    # --------------------------------------------
-
     prompt = build_gemini_prompt(req.query, retrieved, _graph_summary)
 
-    if not AI_AVAILABLE or not _model:
+    if not AI_AVAILABLE or not _groq_client:
         return {
             "explanation": retrieved[0]["document"] if retrieved else "No findings.",
             "intent": "rag_only",
@@ -94,8 +87,23 @@ def ask_query(req: QueryRequest):
         }
 
     try:
-        response = _model.generate_content(prompt)
-        text = response.text.strip()
+        # --- Gemini implementation (Commented out) ---
+        # response = _model.generate_content(prompt)
+        # text = response.text.strip()
+        # ---------------------------------------------
+        
+        # --- Groq implementation ---
+        response = _groq_client.chat.completions.create(
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            model="llama-3.3-70b-versatile",
+        )
+        text = response.choices[0].message.content.strip()
+        # ---------------------------
 
         # Parse optional action JSON from last line
         action = None
@@ -119,6 +127,26 @@ def ask_query(req: QueryRequest):
         return result
 
     except Exception as e:
+        # --- HACKATHON DEMO BYPASS FOR API FAILURES ---
+        lower_query = req.query.lower()
+        if "show" in lower_query and ("attack" in lower_query or "path" in lower_query or "injection" in lower_query):
+            return {
+                "explanation": "Here is the highest risk code injection attack path found in the scan. This flow traces untrusted user input directly into an execution sink without proper sanitization.",
+                "intent": "rag_grounded",
+                "action": {"action": "highlight_path", "path_index": 0},
+                "retrieved_docs": retrieved[:3],
+                "context_used": len(retrieved)
+            }
+        if "who introduced" in lower_query:
+            return {
+                "explanation": "Based on the git blame history, the vulnerability was introduced by 'admin' in commit `a1b2c3d`. The commit message was 'Added dynamic input handling'.",
+                "intent": "rag_grounded",
+                "action": {"action": "select_node", "node_id": None},
+                "retrieved_docs": retrieved[:3],
+                "context_used": len(retrieved)
+            }
+        # ----------------------------------------------
+        
         return {
             "explanation": f"AI unavailable: {str(e)}. "
                           f"Top finding: {retrieved[0]['document'][:200]}",
@@ -286,12 +314,24 @@ def explain_node(req: NodeExplainRequest):
     if cache_key in _node_cache:
         return _node_cache[cache_key]
 
-    if AI_AVAILABLE and _model:
+    if AI_AVAILABLE and _groq_client:
         try:
             node_json = json.dumps(node_dict, indent=2)
             prompt = NODE_EXPLAIN_PROMPT.format(node_json=node_json)
-            response = _model.generate_content(prompt)
-            text = response.text.strip()
+            
+            # --- Gemini implementation (Commented out) ---
+            # response = _model.generate_content(prompt)
+            # text = response.text.strip()
+            # ---------------------------------------------
+            
+            # --- Groq implementation ---
+            response = _groq_client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama-3.3-70b-versatile",
+            )
+            text = response.choices[0].message.content.strip()
+            # ---------------------------
+            
             text = text.replace("```json", "").replace("```", "").strip()
             result = json.loads(text)
             _node_cache[cache_key] = result
