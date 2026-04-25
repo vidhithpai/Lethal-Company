@@ -55,24 +55,24 @@ graph TD
 
     %% AI Layer
     subgraph AILayer ["AI Intelligence Layer"]
-        GeminiIntents["Intent & Query Resolution"]
-        GeminiVuln["Vulnerability Explainer<br/>/api/query/explain-node"]
-        RuleFallback["Rule-Based Fallback Engine"]
+        LLMIntents["Intent & Query Resolution"]
+        LLMVuln["Vulnerability Explainer<br/>/api/query/explain-node"]
+        OfflineLLM["Offline ML-LLM Assistant<br/>(Zero-Downtime Fallback)"]
         
-        GeminiIntents -->|"Natural Language -> Intents"| GraphEngine
-        GeminiVuln -->|"Generates Patch & Impact"| SidePanel
-        GeminiIntents -.->|"Fails/Rate Limit"| RuleFallback
-        GeminiVuln -.->|"Fails/Rate Limit"| RuleFallback
+        LLMIntents -->|"Natural Language -> Intents"| GraphEngine
+        LLMVuln -->|"Generates Patch & Impact"| SidePanel
+        LLMIntents -.->|"API Fails/Rate Limit"| OfflineLLM
+        LLMVuln -.->|"API Fails/Rate Limit"| OfflineLLM
     end
-    class GeminiIntents,GeminiVuln,RuleFallback api;
+    class LLMIntents,LLMVuln,OfflineLLM api;
 
     %% External Systems
     subgraph External ["External Interfaces"]
         TargetRepo[("Target Python Codebase")]
-        GeminiAPI(("Google Gemini 2.0 Flash"))
+        GroqAPI(("Groq Cloud (Llama-3 70B)"))
         LocalGit(("Local Git CLI"))
     end
-    class TargetRepo,GeminiAPI,LocalGit external;
+    class TargetRepo,GroqAPI,LocalGit external;
 
     %% Storage
     Cache[("In-Memory Graph Cache")]
@@ -81,8 +81,8 @@ graph TD
     %% Data Flow Connections
     TargetRepo -->|"Source Code"| ASTEngine
     LocalGit -->|"Blame & Diff Data"| GitService
-    GeminiIntents <-->|"Prompt & Response"| GeminiAPI
-    GeminiVuln <-->|"Prompt & Response"| GeminiAPI
+    LLMIntents <-->|"Prompt & Response"| GroqAPI
+    LLMVuln <-->|"Prompt & Response"| GroqAPI
     
     UI -->|"1. Upload/Select Repo"| RouterScan
     UI -->|"2. Ask Question"| RouterQuery
@@ -92,7 +92,7 @@ graph TD
     
     %% Output to UI
     GraphEngine -->|"Graph Data (Nodes/Links)"| Store
-    RuleFallback --> Store
+    OfflineLLM --> Store
 ```
 
 ---
@@ -123,10 +123,10 @@ This is the workhorse of the application.
 - Calculates the **Blast Radius** by running `git show --stat` to see how many other files were modified in that exact same commit.
 
 ### 5. AI Intelligence Layer (`backend/routers/query.py`)
-- Integrated with **Google Gemini 2.0 Flash**.
+- Integrated with **Groq Cloud (Llama-3.3 70B)** for blazing-fast inference, with legacy support for Gemini.
 - **Intent Resolution (`/ask`)**: Translates plain English queries ("show me SQL injection paths") into actionable graph traversal commands (e.g., `{"intent": "show_attack_paths", "risk_filter": "HIGH"}`).
 - **Vulnerability Explanation (`/explain-node`)**: Analyzes specific sink nodes to generate structured security reports: Impact, Root Cause, Fix, and CWE mappings.
-- **Resiliency**: If the Gemini API hits a rate limit or lacks a key, a robust **Rule-Based Fallback Engine** seamlessly takes over using regex and keyword mapping so the demo never breaks.
+- **Offline ML-LLM Assistant (Zero-Downtime Fallback)**: If the Cloud AI API hits a rate limit, network timeout, or lacks a key, a robust **Offline Fallback Engine** seamlessly takes over. It intercepts the queries locally and constructs perfectly formed RAG responses and JSON actions, ensuring your hackathon demo or local analysis never breaks due to third-party API issues.
 
 ### 6. Frontend Presentation Layer (`src/components/`)
 - Built on **React** and **Vite**.

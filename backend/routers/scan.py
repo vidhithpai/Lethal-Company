@@ -135,8 +135,8 @@ async def scan_upload(
         content = await f.read()
         out.write_bytes(content)
 
-    set_security_root(base)
-    built = get_security_graph(base)
+    from backend.services.code_security_graph import analyze_codebase
+    built = analyze_codebase(str(base))
     g = built["graph"]
     nodes = built["nodes"]
     edges = built["edges"]
@@ -157,6 +157,12 @@ async def scan_upload(
     attack_paths = compute_high_risk_paths(limit=10)
     node_list_data = [dict(data, id=n) for n, data in g.nodes(data=True)]
     
+    # Update global state so reports get the git-enriched nodes
+    import backend.services.code_security_graph as csg
+    csg._current_graph["nodes"] = node_list_data
+    csg._current_paths = attack_paths
+    csg._current_high_risk = attack_paths
+
     _scan_state.update({
         "last_path": str(base),
         "nodes": len(nodes),

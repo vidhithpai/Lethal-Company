@@ -2,7 +2,7 @@
 
 > **AI-powered code security analysis that finds attack paths before attackers do.**
 
-VulnGraph scans Python codebases, builds an interactive 3D graph of how dangerous data flows through your code, and uses Google Gemini AI to explain vulnerabilities in plain English.
+VulnGraph scans Python codebases, builds an interactive 3D graph of how dangerous data flows through your code, and uses **Groq's Llama-3** (with an Offline ML-LLM Assistant Fallback) to explain vulnerabilities in plain English and generate executive reports.
 
 ---
 
@@ -39,7 +39,7 @@ It does this by:
 4. **Letting you ask questions** in plain English ("show me SQL injection paths")
 5. **Showing who introduced** each vulnerability and when (via git blame)
 
-**You do not need to be a security expert to use it.** The AI explains everything.
+**You do not need to be a security expert to use it.** The AI and the Offline ML-LLM Fallback Assistant explain everything.
 
 ---
 
@@ -49,9 +49,12 @@ It does this by:
 Show a sink node, click it, and the side panel shows: *"This SQL injection was introduced by [Author] on [Date] in commit abc1234, message: 'added search feature'."* No existing tool — OWASP, Snyk, SonarQube — does this in a visual, interactive way.
 
 2. **"Ask it anything in plain English — it understands security intent"**
-Type *"where does user input reach SQL execution?"* — the graph animates the exact tainted path. This isn't keyword search. Gemini Flash understands the security intent and maps it to a live graph traversal. Judges from industry have never seen a conversational interface on top of a taint graph.
+Type *"where does user input reach SQL execution?"* — the graph animates the exact tainted path. This isn't keyword search. The Llama-3 AI understands the security intent and maps it to a live graph traversal. Judges from industry have never seen a conversational interface on top of a taint graph.
 
-3. **"Patch a node and watch your attack surface shrink in real time"**
+3. **"Zero Downtime: The Offline ML-LLM Assistant Fallback"**
+During hackathons, APIs fail, networks drop, and quotas are exceeded. VulnGraph features an offline ML-LLM Fallback model that seamlessly intercepts failed API calls, ensuring the RAG engine and live 3D graph simulations continue to function flawlessly under all conditions.
+
+4. **"Patch a node and watch your attack surface shrink in real time"**
 Click the vulnerable `cursor.execute` node → mark as patched → the attack path disappears instantly. The graph recomputes live. This demonstrates the business value: *"which single fix eliminates the most risk?"*
 
 4. **"We show blast radius — not just what's vulnerable, but what else was broken by the same change"**
@@ -78,7 +81,7 @@ VulnGraph:
 
 5. **Scores the risk** — a path from a source to a sink with no sanitizer is **HIGH** risk. One that passes through a sanitizer is lower risk.
 
-6. **Asks Gemini AI** to explain what it found and suggest fixes.
+6. **Asks the AI Engine** (Groq Llama-3 or the Offline Fallback Assistant) to explain what it found, generate a report, and suggest fixes.
 
 ---
 
@@ -116,7 +119,8 @@ demo_project/
 | **Backend** | FastAPI (Python) | Fast async API, auto-generates docs |
 | **AST Analysis** | Python `ast` module | Reads code structure without running it |
 | **Graph Engine** | NetworkX | Shortest path, taint propagation |
-| **AI** | Google Gemini 2.0 Flash | Natural language security explanations |
+| **AI Cloud** | Groq Llama-3.3 70B | Blazing fast natural language security explanations |
+| **AI Fallback** | Offline ML-LLM Assistant | Zero-downtime resilient RAG fallback engine |
 | **Git Analysis** | `git blame` via subprocess | Commit attribution |
 
 ---
@@ -138,7 +142,8 @@ Lethal-Company/               ← project root (yes, the folder name is Lethal-C
 │   └── routers/
 │       ├── security.py      ← /api/graph, /api/attack-paths, /api/high-risk-paths
 │       ├── scan.py          ← /api/cve/scan (triggers the AST analysis)
-│       ├── query.py         ← /api/query/ask (Gemini AI integration)
+│       ├── query.py         ← /api/query/ask (Groq AI integration & Offline Fallback)
+│       ├── report.py        ← /api/report/html (AI-Generated Executive NL Reports)
 │       └── git_router.py    ← /api/git/blame, /api/git/timeline
 │
 ├── src/                      ← React frontend
@@ -226,14 +231,14 @@ pip install -r requirements.txt
 npm install
 ```
 
-**Step 4 — Set your Gemini API key**
+**Step 4 — Set your Groq API key**
 
-The `.env` file already exists with a key. If you want to use your own:
+The `.env` file already exists with a key template. Edit it to use your own:
 ```bash
 # .env
-GEMINI_API_KEY=your_key_here
+GROQ_API_KEY=your_groq_key_here
 ```
-Get a free key at: https://aistudio.google.com/apikey
+Get a free key at: https://console.groq.com
 
 ---
 
@@ -493,7 +498,7 @@ Response includes:
 ```
 
 #### `POST /api/query/ask`
-Ask a natural language question. Returns structured JSON + AI explanation.
+Ask a natural language question. Returns structured JSON + AI explanation (or triggers the Offline ML-LLM Assistant on failure).
 
 ```bash
 curl -X POST http://127.0.0.1:8001/api/query/ask \

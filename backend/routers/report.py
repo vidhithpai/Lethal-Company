@@ -10,6 +10,23 @@ from backend.services.code_security_graph import (
     get_current_graph, get_current_attack_paths,
     get_current_high_risk_paths
 )
+from backend.routers.query import _groq_client, AI_AVAILABLE
+
+def _generate_ai_summary(project, sinks_len, high_len, sources_len, files_len):
+    if not AI_AVAILABLE or not _groq_client:
+        return f"Scan completed for {project}. Found {sinks_len} vulnerabilities across {files_len} files, with {high_len} high-risk attack paths originating from {sources_len} entry points."
+    
+    prompt = f"Write a 2-sentence executive security summary for a project named '{project}'. The scan found {sinks_len} vulnerabilities, {high_len} high/critical attack paths, and {sources_len} exposed entry points across {files_len} files. Be professional and concise."
+    try:
+        response = _groq_client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile",
+            temperature=0.3,
+            max_tokens=150
+        )
+        return response.choices[0].message.content.strip()
+    except Exception:
+        return f"Scan completed for {project}. Found {sinks_len} vulnerabilities across {files_len} files, with {high_len} high-risk attack paths originating from {sources_len} entry points."
 
 @router.get("/api/report/json")
 def download_json_report():
@@ -29,6 +46,13 @@ def download_json_report():
             "project": graph.get("meta", {}).get("scanned_project", "unknown")
         },
         "executive_summary": {
+            "ai_summary": _generate_ai_summary(
+                graph.get("meta", {}).get("scanned_project", "unknown"),
+                len(sinks),
+                sum(1 for p in paths if p.get("classification") in ("HIGH", "CRITICAL") or p.get("risk") in ("HIGH", "CRITICAL", "high", "critical")),
+                len(sources),
+                len(set(n.get("file") for n in nodes if n.get("file")))
+            ),
             "total_vulnerabilities": len(sinks),
             "total_attack_paths": len(paths),
             "high_risk_paths": sum(
@@ -131,6 +155,10 @@ def download_html_report():
     project = graph.get("meta", {}).get("scanned_project", "unknown")
     generated = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
+    ai_nl_summary = _generate_ai_summary(
+        project, len(sinks), len(high), len(sources), len(set(n.get("file") for n in nodes if n.get("file")))
+    )
+
     def risk_color(risk):
         if not risk: return "#6B7280"
         risk_upper = str(risk).upper()
@@ -226,6 +254,10 @@ def download_html_report():
     </div>
     <div class="stat-lbl">Files analyzed</div>
   </div>
+</div>
+<div class="section" style="background:#EFF6FF; border-color:#BFDBFE;">
+  <h2 style="color:#1E3A8A; border-bottom-color:#BFDBFE;">AI Executive Summary</h2>
+  <p style="margin:0; font-size:14px; line-height:1.6; color:#1E40AF;">{ai_nl_summary}</p>
 </div>
 <div class="section">
   <h2>Vulnerabilities — sorted by risk</h2>
