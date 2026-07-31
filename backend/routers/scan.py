@@ -66,16 +66,15 @@ def scan(req: ScanRequest):
             except Exception:
                 pass
 
-    # Optionally enrich nodes with git blame
+    # Enrich nodes with git blame (or mock fallback if .git is missing)
     repo_root = find_git_root(str(p))
-    if repo_root:
-        node_list = [dict(data) for _, data in g.nodes(data=True)]
-        enriched = enrich_nodes_with_git(node_list, repo_root)
-        for enode in enriched:
-            nid = enode.get("id")
-            if nid and nid in g:
-                for k, v in enode.items():
-                    g.nodes[nid][k] = v
+    node_list = [dict(data) for _, data in g.nodes(data=True)]
+    enriched = enrich_nodes_with_git(node_list, repo_root)
+    for enode in enriched:
+        nid = enode.get("id")
+        if nid and nid in g:
+            for k, v in enode.items():
+                g.nodes[nid][k] = v
 
     _scan_state.update({
         "last_path": str(p),
@@ -150,16 +149,15 @@ async def scan_upload(
     sources = built["sources"]
     sinks = built["sinks"]
 
-    # Enrich with git history if possible
+    # Enrich with git history (or mock fallback)
     repo_root = find_git_root(str(base))
-    if repo_root:
-        node_list = [dict(data) for _, data in g.nodes(data=True)]
-        enriched = enrich_nodes_with_git(node_list, repo_root)
-        for enode in enriched:
-            nid = enode.get("id")
-            if nid and nid in g:
-                for k, v in enode.items():
-                    g.nodes[nid][k] = v
+    node_list = [dict(data) for _, data in g.nodes(data=True)]
+    enriched = enrich_nodes_with_git(node_list, repo_root)
+    for enode in enriched:
+        nid = enode.get("id")
+        if nid and nid in g:
+            for k, v in enode.items():
+                g.nodes[nid][k] = v
 
     attack_paths = compute_high_risk_paths(limit=10)
     node_list_data = [dict(data, id=n) for n, data in g.nodes(data=True)]
@@ -224,14 +222,13 @@ def scan_realworld(req: RealWorldScanRequest):
         community_counts[comm] = community_counts.get(comm, 0) + 1
         
     repo_root = find_git_root(str(p))
-    if repo_root:
-        node_list = [dict(data) for _, data in g.nodes(data=True)]
-        enriched = enrich_nodes_with_git(node_list, repo_root)
-        for enode in enriched:
-            nid = enode.get("id")
-            if nid and nid in g:
-                for k, v in enode.items():
-                    g.nodes[nid][k] = v
+    node_list = [dict(data) for _, data in g.nodes(data=True)]
+    enriched = enrich_nodes_with_git(node_list, repo_root)
+    for enode in enriched:
+        nid = enode.get("id")
+        if nid and nid in g:
+            for k, v in enode.items():
+                g.nodes[nid][k] = v
                     
     paths = compute_attack_paths(limit=500, max_depth=14)
     highest_risk_path = max(paths, key=lambda x: x["score"], default=None) if paths else None

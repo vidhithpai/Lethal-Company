@@ -191,19 +191,47 @@ export default function UnifiedPanel({
               {/* Attack paths through this node */}
               {nodeContext?.attack_paths_through?.length > 0 && (
                 <Section title={`Attack paths (${nodeContext.attack_paths_through.length})`}>
-                  {nodeContext.attack_paths_through.slice(0,3).map((p, i) => (
-                    <div key={i} style={{
-                      background:"#1F2937", borderRadius:6,
-                      padding:"8px 10px", marginBottom:6
-                    }}>
-                      <span style={{ color: riskColor(p.risk || p.classification), fontWeight:500 }}>
-                        {p.risk || p.classification}
-                      </span>
-                      <span style={{ color:"#6B7280", marginLeft:8 }}>
-                        score {p.score || p.risk_score}
-                      </span>
-                    </div>
-                  ))}
+                  <div style={{ fontSize:11, color:"#9CA3AF", marginBottom:8, fontStyle:"italic" }}>
+                    Click a path below to simulate the attack trace on the graph
+                  </div>
+                  {nodeContext.attack_paths_through.slice(0,3).map((p, i) => {
+                    const isHoverable = attackPaths && attackPaths.length > 0;
+                    return (
+                      <div key={i} 
+                        onClick={() => {
+                          if (!attackPaths) return;
+                          const globalIdx = attackPaths.findIndex(ap => ap.path && p.path && ap.path.join(',') === p.path.join(','));
+                          if (globalIdx >= 0) {
+                            onHighlightPath(globalIdx);
+                          }
+                        }}
+                        style={{
+                          background:"#1F2937", borderRadius:6,
+                          padding:"8px 10px", marginBottom:6,
+                          cursor: isHoverable ? "pointer" : "default",
+                          border: "1px solid transparent"
+                        }}
+                        onMouseEnter={(e) => { if(isHoverable) e.currentTarget.style.border = "1px solid #3B82F6"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.border = "1px solid transparent"; }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <div>
+                            <span style={{ color: riskColor(p.risk || p.classification), fontWeight:500 }}>
+                              {p.risk || p.classification}
+                            </span>
+                            <span style={{ color:"#6B7280", marginLeft:8 }}>
+                              score {p.score || p.risk_score}
+                            </span>
+                          </div>
+                          {isHoverable && (
+                            <span style={{ color:"#3B82F6", fontSize:11, fontWeight:500 }}>
+                              ▶ Animate
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </Section>
               )}
 
