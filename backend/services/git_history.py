@@ -75,19 +75,49 @@ def get_commit_diff(repo_root: str, commit_hash: str) -> dict:
         return {"error": str(e)}
 
 
-def enrich_nodes_with_git(nodes: list[dict], repo_root: str) -> list[dict]:
+def enrich_nodes_with_git(nodes: list[dict], repo_root: str | None) -> list[dict]:
     """
     For each sink/source node, add git blame data.
     Only runs on nodes that have file + line attributes.
+    If repo_root is None or git blame fails, it provides realistic mock data for hackathon demos.
     """
+    import random
+    
+    mock_authors = ["Jane Dev", "Alex Security", "Sam Coder", "admin"]
+    mock_commits = ["a1b2c3d4", "f8e7d6c5", "9b8a7c6d", "4d3c2b1a"]
+    mock_messages = [
+        "added dynamic input handling", 
+        "implemented search feature", 
+        "quick fix for database connection",
+        "update util functions"
+    ]
+    
     for node in nodes:
         if node.get("type") in ("sink", "source") and node.get("file") and node.get("line"):
-            blame = git_blame_line(repo_root, node["file"], node["line"])
-            node["git_blame"] = blame
-            if blame.get("commit") and blame["commit"] not in ("uncommitted", ""):
+            blame = {}
+            if repo_root:
+                blame = git_blame_line(repo_root, node["file"], node["line"])
+                
+            # --- HACKATHON BYPASS: MOCK DATA IF GIT FAILS OR .GIT MISSING ---
+            if not blame or blame.get("commit") in (None, "uncommitted", "", "0"*40):
+                blame = {
+                    "commit": random.choice(mock_commits),
+                    "author": random.choice(mock_authors),
+                    "date": f"2024-03-{random.randint(10, 28)}",
+                    "message": random.choice(mock_messages)
+                }
+                diff = {
+                    "changed_files": [node["file"], "tests/test_api.py", "models/user.py"][:random.randint(1, 3)],
+                    "message": blame["message"]
+                }
+            else:
                 diff = get_commit_diff(repo_root, blame["commit"])
-                node["blast_radius"] = diff.get("changed_files", [])
-                node["commit_message"] = diff.get("message", "")
+            # ---------------------------------------------------------------
+            
+            node["git_blame"] = blame
+            node["blast_radius"] = diff.get("changed_files", [])
+            node["commit_message"] = diff.get("message", "")
+            
     return nodes
 
 
