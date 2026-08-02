@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -15,6 +16,7 @@ from backend.services.code_security_graph import (
 )
 from backend.services.git_history import find_git_root, enrich_nodes_with_git
 from backend.services.rag_engine import index_graph_findings
+from backend.services.java_graph_builder import analyze_java_codebase, detect_project_language
 from backend.routers.query import update_graph_summary
 
 router = APIRouter(prefix="/api/cve", tags=["scan"])
@@ -40,15 +42,26 @@ def scan(req: ScanRequest):
         raise HTTPException(status_code=400, detail="project_path is required")
 
     p = Path(project_path).expanduser().resolve()
+    cwd = Path(os.getcwd()).resolve()
+    try:
+        p.relative_to(cwd.parent)
+    except ValueError:
+        if not p.exists():
+            raise HTTPException(status_code=400, detail="Path must be an existing directory within the workspace or parent directory")
+
     if not p.exists() or not p.is_dir():
         raise HTTPException(
             status_code=400,
             detail=f"project_path must be an existing directory: {p}",
         )
 
-    # Trigger a fresh scan
-    from backend.services.code_security_graph import analyze_codebase
-    built = analyze_codebase(str(p))
+    # Trigger a fresh scan (Java or Python pipeline)
+    language = detect_project_language(str(p))
+    if language == "java":
+        built = analyze_java_codebase(str(p))
+    else:
+        from backend.services.code_security_graph import analyze_codebase
+        built = analyze_codebase(str(p))
 
     g = built["graph"]
     nodes = built["nodes"]
@@ -107,6 +120,7 @@ def scan(req: ScanRequest):
     return {
         "message": "Scan complete",
         "project_path": str(p),
+        "language": language,
         "nodes": len(nodes),
         "edges": len(edges),
         "sources": len(sources),
@@ -141,8 +155,12 @@ async def scan_upload(
         content = await f.read()
         out.write_bytes(content)
 
-    from backend.services.code_security_graph import analyze_codebase
-    built = analyze_codebase(str(base))
+    language = detect_project_language(str(base))
+    if language == "java":
+        built = analyze_java_codebase(str(base))
+    else:
+        from backend.services.code_security_graph import analyze_codebase
+        built = analyze_codebase(str(base))
     g = built["graph"]
     nodes = built["nodes"]
     edges = built["edges"]
@@ -188,6 +206,7 @@ async def scan_upload(
 
     return {
         "message": f"Uploaded and scanned: {base}",
+        "language": language,
         "nodes": len(nodes),
         "edges": len(edges),
         "sources": len(sources),
@@ -231,7 +250,7 @@ def scan_realworld(req: RealWorldScanRequest):
                 g.nodes[nid][k] = v
                     
     paths = compute_attack_paths(limit=500, max_depth=14)
-    highest_risk_path = max(paths, key=lambda x: x["score"], default=None) if paths else None
+    highest_risk_path = max(paths, key=lambda x: x.get("risk", 0), default=None) if paths else None
     if highest_risk_path and "classification" not in highest_risk_path:
         highest_risk_path["classification"] = highest_risk_path.get("risk", "LOW")
         

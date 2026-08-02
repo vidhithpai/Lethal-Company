@@ -288,32 +288,45 @@ export default function UnifiedPanel({
                 </Section>
               )}
 
-              {/* Git blame */}
-              {selectedNode.git_blame?.commit && (
+              {/* Git blame / Commit attribution */}
+              {["sink", "source"].includes(selectedNode.type) && (
                 <Section title="Commit attribution">
-                  <div style={{
-                    background:"#1F2937", borderRadius:6,
-                    padding:"8px 10px", fontSize:12
-                  }}>
-                    <div><span style={{color:"#6B7280"}}>Author: </span>
-                      {selectedNode.git_blame.author}</div>
-                    <div><span style={{color:"#6B7280"}}>Date: </span>
-                      {selectedNode.git_blame.date}</div>
-                    <div><span style={{color:"#6B7280"}}>Commit: </span>
-                      <code style={{color:"#60A5FA"}}>
-                        {selectedNode.git_blame.commit}
-                      </code>
-                    </div>
-                    <div style={{color:"#9CA3AF", marginTop:4, fontStyle:"italic"}}>
-                      "{selectedNode.git_blame.message}"
-                    </div>
-                  </div>
-                  {selectedNode.blast_radius?.length > 0 && (
-                    <div style={{ marginTop:6, fontSize:11, color:"#9CA3AF" }}>
-                      Blast radius: {selectedNode.blast_radius.length} files —&nbsp;
-                      {selectedNode.blast_radius.slice(0,3).join(", ")}
-                      {selectedNode.blast_radius.length > 3 &&
-                        ` +${selectedNode.blast_radius.length - 3} more`}
+                  {selectedNode.git_blame?.commit ? (
+                    <>
+                      <div style={{
+                        background:"#1F2937", borderRadius:6,
+                        padding:"8px 10px", fontSize:12
+                      }}>
+                        <div><span style={{color:"#6B7280"}}>Author: </span>
+                          {selectedNode.git_blame.author}</div>
+                        <div><span style={{color:"#6B7280"}}>Date: </span>
+                          {selectedNode.git_blame.date}</div>
+                        <div><span style={{color:"#6B7280"}}>Commit: </span>
+                          <code style={{color:"#60A5FA"}}>
+                            {selectedNode.git_blame.commit}
+                          </code>
+                        </div>
+                        {selectedNode.git_blame.message && (
+                          <div style={{color:"#9CA3AF", marginTop:4, fontStyle:"italic"}}>
+                            "{selectedNode.git_blame.message}"
+                          </div>
+                        )}
+                      </div>
+                      {selectedNode.blast_radius?.length > 0 && (
+                        <div style={{ marginTop:6, fontSize:11, color:"#9CA3AF" }}>
+                          Blast radius: {selectedNode.blast_radius.length} files —&nbsp;
+                          {selectedNode.blast_radius.slice(0,3).join(", ")}
+                          {selectedNode.blast_radius.length > 3 &&
+                            ` +${selectedNode.blast_radius.length - 3} more`}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div style={{
+                      background:"#1F2937", borderRadius:6,
+                      padding:"8px 10px", fontSize:12, color:"#9CA3AF", fontStyle:"italic"
+                    }}>
+                      No git history available
                     </div>
                   )}
                 </Section>

@@ -14,11 +14,73 @@ from datetime import datetime
 
 
 def find_git_root(path: str) -> str | None:
-    """Walk up directory tree to find .git folder"""
+    """Walk up directory tree to find .git folder, with fallback to original repo paths."""
+    print(f"[GIT_CHECK] Checking repo_path: '{path}' for .git")
     p = Path(path).resolve()
+    
+    # 1. Direct check: walk up directory tree
     for parent in [p] + list(p.parents):
-        if (parent / ".git").exists():
+        dot_git = parent / ".git"
+        if dot_git.exists():
+            print(f"[GIT_CHECK] os.path.exists('{dot_git}') -> True")
+            print(f"[GIT_CHECK] Code path: REAL GIT BLAME (found direct repo at {parent})")
             return str(parent)
+            
+    print(f"[GIT_CHECK] os.path.exists('{p / '.git'}') -> False")
+    
+    # DEMO-ENVIRONMENT WORKAROUND:
+    # This fallback lookup matches an uploaded project's folder name against local repositories
+    # on the host filesystem because web browser folder uploads (<input webkitdirectory>) exclude
+    # hidden .git directories. In a real deployed version, the upload flow itself should preserve .git
+    # (e.g. by using a file input that doesn't filter dotfiles, or requiring a git URL/clone instead of a folder upload)
+    # rather than relying on local path matching.
+    folder_name = p.name
+    candidates = [
+        Path.cwd() / folder_name,
+        Path.cwd().parent / folder_name,
+        Path.cwd().parent / "Demorep" / folder_name,
+    ]
+    
+    # Check user-configured search roots if provided via environment variable
+    search_root_env = os.environ.get("LOCAL_REPO_SEARCH_ROOT")
+    if search_root_env:
+        for root_path in search_root_env.split(os.pathsep):
+            sr = Path(root_path.strip()).expanduser()
+            candidates.extend([
+                sr / folder_name,
+                sr / "Demorep" / folder_name,
+            ])
+    else:
+        # Default user home search locations
+        user_home = Path.home()
+        candidates.extend([
+            user_home / "Documents" / "Projects" / folder_name,
+            user_home / "Documents" / "Projects" / "Demorep" / folder_name,
+            user_home / "Projects" / folder_name,
+            user_home / "Projects" / "Demorep" / folder_name,
+        ])
+    
+    # Search parent directories for matching folder with .git
+    curr = Path.cwd()
+    for _ in range(3):
+        if curr.parent != curr:
+            curr = curr.parent
+            candidates.append(curr / folder_name)
+            candidates.append(curr / "Demorep" / folder_name)
+            
+    for cand in candidates:
+        try:
+            cand_resolved = cand.resolve()
+            dot_git = cand_resolved / ".git"
+            if cand_resolved.exists() and dot_git.exists():
+                print(f"[GIT_CHECK] Found fallback repo matching '{folder_name}' with .git at '{cand_resolved}'")
+                print(f"[GIT_CHECK] Code path: REAL GIT BLAME (fallback to original local path '{cand_resolved}')")
+                return str(cand_resolved)
+        except Exception:
+            continue
+
+    print(f"[GIT_CHECK] No .git folder found for '{path}' or its fallback candidates.")
+    print(f"[GIT_CHECK] Code path: NO GIT HISTORY AVAILABLE")
     return None
 
 
@@ -28,12 +90,41 @@ def git_blame_line(repo_root: str, filepath: str, line_number: int) -> dict:
     Returns: {commit_hash, author, date, message_summary}
     """
     try:
-        rel_path = str(Path(filepath).relative_to(repo_root))
+        fp = Path(filepath).resolve()
+        rr = Path(repo_root).resolve()
+        
+        # Try direct relative_to
+        try:
+            rel_path = str(fp.relative_to(rr))
+        except ValueError:
+            # Handle uploaded files in /tmp/vulngraph_uploads/<repo_name>/...
+            repo_name = rr.name
+            parts = fp.parts
+            if repo_name in parts:
+                idx = parts.index(repo_name)
+                rel_path = str(Path(*parts[idx+1:]))
+            else:
+                rel_path = fp.name
+                
+        # Check if file exists in target repo
+        if not (rr / rel_path).exists():
+            # Try searching by filename in repo_root
+            matches = list(rr.glob(f"**/{fp.name}"))
+            if matches:
+                rel_path = str(matches[0].relative_to(rr))
+            else:
+                print(f"[GIT_CHECK] File '{rel_path}' not found in repo '{repo_root}'")
+                return {}
+
         result = subprocess.run(
-            ["git", "-C", repo_root, "blame", "-L",
+            ["git", "-C", str(rr), "blame", "-L",
              f"{line_number},{line_number}", "--porcelain", rel_path],
             capture_output=True, text=True, timeout=10
         )
+        if result.returncode != 0 or not result.stdout.strip():
+            print(f"[GIT_CHECK] git blame command returned code {result.returncode}. Stderr: {result.stderr.strip()}")
+            return {}
+            
         lines = result.stdout.splitlines()
         if not lines:
             return {}
@@ -52,6 +143,7 @@ def git_blame_line(repo_root: str, filepath: str, line_number: int) -> dict:
                 info["message"] = line[8:]
         return info
     except Exception as e:
+        print(f"[GIT_CHECK] git_blame_line exception: {e}")
         return {"error": str(e)}
 
 
@@ -59,6 +151,8 @@ def get_commit_diff(repo_root: str, commit_hash: str) -> dict:
     """
     Get files changed in a commit (blast radius).
     """
+    if not commit_hash or commit_hash == "uncommitted":
+        return {"message": "Not yet committed", "changed_files": [], "blast_radius": 0}
     try:
         result = subprocess.run(
             ["git", "-C", repo_root, "show", "--stat", "--format=%s", commit_hash],
@@ -79,44 +173,31 @@ def enrich_nodes_with_git(nodes: list[dict], repo_root: str | None) -> list[dict
     """
     For each sink/source node, add git blame data.
     Only runs on nodes that have file + line attributes.
-    If repo_root is None or git blame fails, it provides realistic mock data for hackathon demos.
+    If repo_root is None or git blame fails, no fake mock data is generated.
     """
-    import random
-    
-    mock_authors = ["Jane Dev", "Alex Security", "Sam Coder", "admin"]
-    mock_commits = ["a1b2c3d4", "f8e7d6c5", "9b8a7c6d", "4d3c2b1a"]
-    mock_messages = [
-        "added dynamic input handling", 
-        "implemented search feature", 
-        "quick fix for database connection",
-        "update util functions"
-    ]
-    
+    print(f"[GIT_CHECK] enrich_nodes_with_git starting with repo_root: '{repo_root}'")
     for node in nodes:
         if node.get("type") in ("sink", "source") and node.get("file") and node.get("line"):
             blame = {}
             if repo_root:
                 blame = git_blame_line(repo_root, node["file"], node["line"])
                 
-            # --- HACKATHON BYPASS: MOCK DATA IF GIT FAILS OR .GIT MISSING ---
-            if not blame or blame.get("commit") in (None, "uncommitted", "", "0"*40):
-                blame = {
-                    "commit": random.choice(mock_commits),
-                    "author": random.choice(mock_authors),
-                    "date": f"2024-03-{random.randint(10, 28)}",
-                    "message": random.choice(mock_messages)
-                }
-                diff = {
-                    "changed_files": [node["file"], "tests/test_api.py", "models/user.py"][:random.randint(1, 3)],
-                    "message": blame["message"]
-                }
-            else:
+            if blame and blame.get("commit") and blame.get("commit") != "uncommitted":
                 diff = get_commit_diff(repo_root, blame["commit"])
-            # ---------------------------------------------------------------
-            
-            node["git_blame"] = blame
-            node["blast_radius"] = diff.get("changed_files", [])
-            node["commit_message"] = diff.get("message", "")
+                node["git_blame"] = blame
+                node["blast_radius"] = diff.get("changed_files", [])
+                node["commit_message"] = diff.get("message", "")
+                print(f"[GIT_CHECK] Enriched node '{node.get('id')}' -> Author: {blame.get('author')}, Commit: {blame.get('commit')}, Msg: '{blame.get('message')}'")
+            elif blame and blame.get("commit") == "uncommitted":
+                node["git_blame"] = blame
+                node["blast_radius"] = []
+                node["commit_message"] = "Not yet committed"
+                print(f"[GIT_CHECK] Node '{node.get('id')}' is uncommitted")
+            else:
+                node["git_blame"] = {"error": "No git history available"}
+                node["blast_radius"] = []
+                node["commit_message"] = ""
+                print(f"[GIT_CHECK] No git history available for node '{node.get('id')}'")
             
     return nodes
 
@@ -145,3 +226,4 @@ def get_vulnerability_timeline(repo_root: str, filepath: str) -> list[dict]:
         return timeline
     except Exception:
         return []
+
