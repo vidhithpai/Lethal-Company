@@ -10,6 +10,7 @@ from backend.routers.query import router as query_router
 from backend.routers.scan import router as scan_router
 from backend.routers.git_router import router as git_router
 from backend.routers.report import router as report_router
+from backend.routers.graph import router as graph_router
 
 app = FastAPI(
     title="VulnGraph Backend",
@@ -35,6 +36,7 @@ app.include_router(query_router)
 app.include_router(scan_router)
 app.include_router(git_router)
 app.include_router(report_router)
+app.include_router(graph_router, prefix="/api/graph")
 
 
 @app.get("/")

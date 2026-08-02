@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 COPY backend/ ./backend/
 COPY demo_project/ ./demo_project/
+COPY sample_project/ ./sample_project/
 
 # Never run as root inside containers
 RUN useradd -m appuser && chown -R appuser /app

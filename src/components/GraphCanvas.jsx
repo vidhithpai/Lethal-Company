@@ -12,12 +12,14 @@ const RISK_COLORS = {
 };
 const getNodeColor = (node) => {
   if (node.patched) return '#4B5563';
+  const nodeType = String(node.type || '').toLowerCase();
   const typeColors = {
     source: '#10B981',
     sink: '#EF4444',
     intermediate: '#F59E0B',
     sanitizer: '#6366F1',
     function: '#3B82F6',
+    normal: '#9CA3AF',
   };
 
   // Only use community color if it's a specific community, otherwise prefer type color
@@ -25,11 +27,12 @@ const getNodeColor = (node) => {
     return node.community_color;
   }
 
-  return typeColors[node.type] || '#6B7280';
+  return typeColors[nodeType] || '#6B7280';
 };
 
 const getNodeSize = (node) => {
-  const base = 6;
+  const nodeType = String(node.type || '').toLowerCase();
+  const base = nodeType === 'normal' ? 4.5 : 6;
   const riskMultiplier = { CRITICAL: 2.5, HIGH: 2.0, MEDIUM: 1.5, LOW: 1.0, critical: 2.5, high: 2.0, medium: 1.5, low: 1.0 };
   const risk = node.risk || 'LOW';
   const confidence = node.confidence || 0.5;
@@ -62,6 +65,7 @@ const GraphLegend = () => (
       {color:'#EF4444', label:'Sink (dangerous op)'},
       {color:'#F59E0B', label:'Intermediate / tainted'},
       {color:'#6366F1', label:'Sanitizer (reduces risk)'},
+      {color:'#9CA3AF', label:'Normal (logic / getter)'},
       {color:'#4B5563', label:'Patched node'},
     ].map(({color, label}) => (
       <div key={label} style={{display:'flex',alignItems:'center',gap:6,marginBottom:3}}>
@@ -78,6 +82,7 @@ const GraphLegend = () => (
 // ─── Custom Three.js object per node ─────────────────────────────────────────
 function buildNodeObject(node, isOnPath) {
   const group = new THREE.Group();
+  const nodeType = String(node.type || '').toLowerCase();
   const radius = getNodeSize(node) / 2;
   const color  = getNodeColor(node);
 
@@ -86,12 +91,12 @@ function buildNodeObject(node, isOnPath) {
   const material = new THREE.MeshLambertMaterial({
     color,
     transparent: true,
-    opacity: node.patched ? 0.5 : 1.0,
+    opacity: node.patched ? 0.45 : (nodeType === 'normal' ? 0.72 : 1.0),
   });
   group.add(new THREE.Mesh(geometry, material));
 
   // Risk ring shell for sinks (emissive shell slightly larger)
-  if (node.type === "sink" && node.risk) {
+  if (nodeType === "sink" && node.risk) {
     const riskCol = RISK_COLORS[node.risk.toLowerCase()] || "#ef4444";
     const ringGeo = new THREE.SphereGeometry(radius + 1.5, 16, 16);
     const ringMat = new THREE.MeshLambertMaterial({
@@ -118,9 +123,14 @@ function buildNodeObject(node, isOnPath) {
   const rawLabel = node.label || (node.id ? node.id.split(":").pop() : "?");
   const label    = rawLabel.length > 24 ? rawLabel.slice(0, 24) + "…" : rawLabel;
   const sprite   = new SpriteText(label);
-  sprite.color        = isOnPath ? "#ffffff" : "#c8d4e8";
-  sprite.textHeight   = isOnPath ? 3.2 : 2.4;
+  sprite.color        = node.patched ? "#6B7280" : (isOnPath ? "#ffffff" : "#c8d4e8");
+  sprite.textHeight   = isOnPath ? 3.2 : (nodeType === 'normal' ? 2.0 : 2.4);
   sprite.fontFace     = "JetBrains Mono, monospace";
+  if (node.patched) {
+    sprite.textHeight = 2.2;
+    sprite.strokeWidth = 0.5;
+    sprite.strokeColor = "#374151";
+  }
   sprite.position.set(0, radius + 5, 0);
   group.add(sprite);
 
@@ -167,7 +177,7 @@ const GraphCanvas = ({ onNodeClick }) => {
     }
   }, [graph]);
 
-  // Per-path zoom: fires whenever bumpZoom() is called from QueryBar
+  // Per-path zoom: fires whenever bumpZoom() is called from the query panel
   const zoomTrigger = useStore((state) => state.zoomTrigger);
   useEffect(() => {
     if (!zoomTrigger || !graphRef.current || !path.length) return;

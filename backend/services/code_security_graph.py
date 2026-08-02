@@ -18,6 +18,7 @@ class SecurityGraphConfig:
 
 _lock = RLock()
 _cache: dict[str, Any] = {"graph": None, "root": None}
+_security_graph: nx.DiGraph | None = None
 
 COMMUNITY_COLORS = {
     "authentication_surface": "#F59E0B",   # amber
@@ -132,9 +133,19 @@ def get_current_high_risk_paths(): return _current_high_risk
 
 
 def invalidate_security_graph_cache() -> None:
+    global _security_graph
     with _lock:
         _cache["graph"] = None
         _cache["root"] = None
+        _security_graph = None
+
+
+def use_mock_graph() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    PATCHED_SECURITY_NODES.clear()
+    set_security_root(repo_root / "sample_project" / "src")
+    invalidate_security_graph_cache()
+    get_security_graph()
 
 
 def patch_security_node(node_id: str) -> bool:
@@ -593,11 +604,21 @@ def get_security_graph(root: Path | None = None) -> dict[str, Any]:
     if not root_dir.exists():
         root_dir = repo_root
 
+    global _security_graph
     with _lock:
         if _cache["graph"] is None or _cache["root"] != str(root_dir):
-            built = build_security_graph(SecurityGraphConfig(root_dir=root_dir))
+            from backend.services.java_graph_builder import (
+                build_java_graph,
+                detect_project_language,
+                java_graph_to_built,
+            )
+            if detect_project_language(str(root_dir)) == "java":
+                built = java_graph_to_built(build_java_graph(str(root_dir)))
+            else:
+                built = build_security_graph(SecurityGraphConfig(root_dir=root_dir))
             _cache["graph"] = built
             _cache["root"] = str(root_dir)
+            _security_graph = built["graph"]
         return _cache["graph"]
 
 
@@ -624,55 +645,59 @@ def compute_attack_surface() -> list[dict[str, Any]]:
     return [dict(data) for nid, data in g.nodes(data=True) if data.get("type") == "source"]
 
 
+def find_attack_paths(G, sources, sinks, max_depth=15):
+    paths = []
+    for src in sources:
+        for sink in sinks:
+            try:
+                for path in nx.all_simple_paths(G, src, sink, cutoff=max_depth):
+                    guards = [n for n in path
+                              if G.nodes[n].get('type') in ('sanitizer', 'guard')]
+                    guard_density = len(guards) / max(len(path), 1)
+                    risk = round(1 - guard_density, 4)
+
+                    sink_scores = [
+                        float(G.nodes[n].get("risk_score", 9.0))
+                        for n in path if G.nodes[n].get("type") == "sink"
+                    ]
+                    edge_weights = []
+                    for i in range(len(path) - 1):
+                        edge_data = G.get_edge_data(path[i], path[i + 1]) or {}
+                        edge_weights.append(float(edge_data.get("weight", 1.0)))
+                    rf_contribution = round(
+                        (
+                            (sum(sink_scores) if sink_scores else risk * 10.0) * 0.55
+                            + (sum(edge_weights) if edge_weights else 1.0) * 0.45
+                        )
+                        / max(len(path), 1)
+                        / 10.0,
+                        4,
+                    )
+
+                    paths.append({
+                        "path": path,
+                        "guards": guards,
+                        "guard_density": guard_density,
+                        "risk": risk,
+                        "rf_contribution": rf_contribution,
+                    })
+            except nx.NetworkXNoPath:
+                continue
+    return sorted(paths, key=lambda x: x["risk"], reverse=True)
+
+
 def compute_attack_paths(limit: int = 50, max_depth: int = 8) -> list[dict[str, Any]]:
     built = get_security_graph()
     g: nx.DiGraph = built["graph"]
     sources = [n for n, d in g.nodes(data=True) if d.get("type") == "source"]
     sinks = [n for n, d in g.nodes(data=True) if d.get("type") == "sink"]
-    sanitizer_nodes = {n for n, d in g.nodes(data=True) if d.get("type") == "sanitizer"}
-
-    results: list[dict[str, Any]] = []
-    for s in sources:
-        for t in sinks:
-            if len(results) >= limit:
-                return results
-            try:
-                for p in nx.all_simple_paths(g, s, t, cutoff=max_depth):
-                    sink_sev = float(g.nodes[t].get("severity", 5.0))
-                    length_penalty = len(p) * 0.3
-                    path_sanitizers = [n for n in p if n in sanitizer_nodes]
-                    sanitizer_bonus = len(path_sanitizers) * 2.0
-                    score = max(0.0, sink_sev - length_penalty - sanitizer_bonus)
-                    
-                    # Compute average confidence
-                    path_confs = []
-                    for i in range(len(p) - 1):
-                        edge_data = g.get_edge_data(p[i], p[i+1])
-                        if edge_data and "confidence" in edge_data:
-                            path_confs.append(edge_data["confidence"])
-                    avg_confidence = round(sum(path_confs) / len(path_confs), 2) if path_confs else 0.5
-
-                    results.append({
-                        "source": s,
-                        "sink": t,
-                        "path": p,
-                        "score": round(score, 2),
-                        "risk": _classify_risk(score),
-                        "sanitizers_on_path": path_sanitizers,
-                        "sink_label": g.nodes[t].get("label", t),
-                        "source_label": g.nodes[s].get("label", s),
-                        "avg_confidence": avg_confidence,
-                    })
-                    if len(results) >= limit:
-                        return results
-            except (nx.NetworkXNoPath, nx.NodeNotFound):
-                continue
-    return results
+    paths = find_attack_paths(g, sources, sinks, max_depth=max_depth)
+    return paths[:limit]
 
 
 def compute_high_risk_paths(limit: int = 20) -> list[dict[str, Any]]:
     paths = compute_attack_paths(limit=500, max_depth=14)
-    return sorted(paths, key=lambda x: x["score"], reverse=True)[:limit]
+    return paths[:limit]
 
 
 def shortest_path_to_target(target_node_id: str) -> list[str]:
@@ -682,22 +707,8 @@ def shortest_path_to_target(target_node_id: str) -> list[str]:
         return []
 
     sources = [n for n, d in g.nodes(data=True) if d.get("type") == "source"]
-    best: list[str] = []
-    best_cost: float | None = None
-
-    for s in sources:
-        if s not in g:
-            continue
-        try:
-            p = nx.dijkstra_path(g, s, target_node_id, weight="weight")
-            cost = nx.dijkstra_path_length(g, s, target_node_id, weight="weight")
-        except (nx.NetworkXNoPath, nx.NodeNotFound):
-            continue
-        if best_cost is None or cost < best_cost:
-            best_cost = cost
-            best = p
-
-    return best
+    paths = find_attack_paths(g, sources, [target_node_id], max_depth=15)
+    return paths[0]["path"] if paths else []
 
 
 def resolve_node_ref(ref: str, *, node_type: str | None = None) -> str | None:
