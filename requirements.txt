@@ -11,3 +11,6 @@ groq
 gitpython
 scipy
 numpy
+llama-cpp-python>=0.2.0  ; extra == "local-ai"
+transformers>=4.35.0     ; extra == "local-ai"
+torch                    ; extra == "local-ai"

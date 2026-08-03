@@ -8,8 +8,9 @@ from groq import Groq
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from backend.services.code_security_graph import compute_high_risk_paths, get_security_graph
+from backend.services.code_security_graph import compute_high_risk_paths, get_security_graph, get_current_graph
 from backend.services.rag_engine import retrieve_relevant_context, build_gemini_prompt
+from backend.services.local_llm import get_analyzer
 
 router = APIRouter(prefix="/api/query", tags=["query"])
 
@@ -127,33 +128,26 @@ def ask_query(req: QueryRequest):
         return result
 
     except Exception as e:
-        # --- HACKATHON DEMO BYPASS FOR API FAILURES ---
+        # Fall back to local inference system
+        node = {"label": req.query, "type": req.filter_type or "sink"}
+        explanation_data = get_analyzer().explain_vulnerability(node, [], "")
+        
+        action = None
         lower_query = req.query.lower()
         if "show" in lower_query and ("attack" in lower_query or "path" in lower_query or "injection" in lower_query):
-            return {
-                "explanation": "Here is the highest risk code injection attack path found in the scan. This flow traces untrusted user input directly into an execution sink without proper sanitization.",
-                "intent": "rag_grounded",
-                "action": {"action": "highlight_path", "path_index": 0},
-                "retrieved_docs": retrieved[:3],
-                "context_used": len(retrieved)
-            }
-        if "who introduced" in lower_query:
-            return {
-                "explanation": "Based on the git blame history, the vulnerability was introduced by 'admin' in commit `a1b2c3d`. The commit message was 'Added dynamic input handling'.",
-                "intent": "rag_grounded",
-                "action": {"action": "select_node", "node_id": None},
-                "retrieved_docs": retrieved[:3],
-                "context_used": len(retrieved)
-            }
-        # ----------------------------------------------
-        
+            action = {"action": "highlight_path", "path_index": 0}
+        elif "who introduced" in lower_query:
+            action = {"action": "select_node", "node_id": None}
+            
         return {
-            "explanation": f"AI unavailable: {str(e)}. "
-                          f"Top finding: {retrieved[0]['document'][:200]}",
-            "intent": "fallback",
-            "action": None,
-            "retrieved_docs": retrieved[:3]
+            "explanation": explanation_data.get("explanation"),
+            "intent": "local_inference",
+            "action": action,
+            "retrieved_docs": retrieved[:3],
+            "mode": explanation_data.get("mode", "rule_based"),
+            "remediation": explanation_data.get("remediation")
         }
+
 
 
 # ─── Prompt: per-node vulnerability analysis ──────────────────────────────────
@@ -342,3 +336,55 @@ def explain_node(req: NodeExplainRequest):
     result = _rule_based_node_analysis(node_dict)
     _node_cache[cache_key] = result
     return result
+
+
+class LocalExplainRequest(BaseModel):
+    node_id: str
+    path: list = []
+
+
+@router.post("/explain-local")
+def explain_local(req: LocalExplainRequest):
+    graph = get_current_graph()
+    nodes = graph.get("nodes", [])
+    
+    # Find matching node
+    node = None
+    for n in nodes:
+        if n.get("id") == req.node_id:
+            node = n
+            break
+            
+    if not node:
+        node = {
+            "id": req.node_id,
+            "label": req.node_id.split(":")[-1] if ":" in req.node_id else req.node_id,
+            "type": "sink",
+        }
+        
+    context_code = ""
+    file_path = node.get("file")
+    line_num = node.get("line")
+    
+    if file_path and line_num:
+        try:
+            from pathlib import Path
+            p = Path(file_path).resolve()
+            if p.exists() and p.is_file():
+                lines = p.read_text(errors="ignore").splitlines()
+                start = max(0, line_num - 25)
+                end = min(len(lines), line_num + 25)
+                context_code = "\n".join(lines[start:end])
+        except Exception as e:
+            print(f"[LocalExplain] Error reading context file: {e}")
+            
+    analyzer = get_analyzer()
+    res = analyzer.explain_vulnerability(node, req.path, context_code)
+    
+    return {
+        "explanation": res.get("explanation"),
+        "remediation": res.get("remediation"),
+        "mode": res.get("mode", analyzer.mode),
+        "model": res.get("model", "None"),
+        "confidence": res.get("confidence", 1.0),
+    }

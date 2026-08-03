@@ -20,6 +20,7 @@ export default function UnifiedPanel({
   const [nodeContext, setNodeContext] = useState(null);
   const [nodeAnalysis, setNodeAnalysis] = useState(null);
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
+  const [aiMode, setAiMode] = useState("groq");
   const chatEndRef = useRef(null);
 
   const [tdraRepoPath, setTdraRepoPath] = useState("/app");
@@ -112,6 +113,7 @@ export default function UnifiedPanel({
         body: JSON.stringify({ query: userMsg })
       });
       const data = await res.json();
+      setAiMode(data.mode || "groq");
 
       // Handle graph actions from AI
       if (data.action) {
@@ -402,6 +404,38 @@ export default function UnifiedPanel({
       {/* AI CHAT TAB */}
       {activeTab === "chat" && (
         <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          {/* ── AI Mode Badge ── */}
+          {(() => {
+            const modeMap = {
+              groq:       { icon: "🌐", label: "Groq Cloud",  color: "#3B82F6", tip: "Queries sent to Groq Cloud API" },
+              local_llm:  { icon: "🤖", label: "Local LLM",   color: "#10B981", tip: "Local mode — your code never leaves this machine" },
+              codebert:   { icon: "📚", label: "CodeBERT",    color: "#8B5CF6", tip: "Local mode — your code never leaves this machine" },
+              rule_based: { icon: "📋", label: "Rule-Based",  color: "#F59E0B", tip: "Local mode — your code never leaves this machine" },
+              rag_only:   { icon: "🔍", label: "RAG Only",    color: "#6B7280", tip: "No AI model — retrieval only" },
+            };
+            const m = modeMap[aiMode] || modeMap.groq;
+            const isLocal = ["local_llm","codebert","rule_based"].includes(aiMode);
+            return (
+              <div title={m.tip} style={{
+                display:"flex", alignItems:"center", gap:6,
+                padding:"5px 14px", background:"#111827",
+                borderBottom:"1px solid #1F2937", flexShrink:0
+              }}>
+                <span style={{ fontSize:11 }}>{m.icon}</span>
+                <span style={{
+                  fontSize:11, fontWeight:600, color: m.color,
+                  letterSpacing:"0.04em"
+                }}>{m.label}</span>
+                {isLocal && (
+                  <span style={{
+                    fontSize:9, color:"#10B981", background:"#10B98115",
+                    border:"1px solid #10B98130", borderRadius:10,
+                    padding:"1px 6px", marginLeft:2
+                  }}>LOCAL · PRIVATE</span>
+                )}
+              </div>
+            );
+          })()}
           <div style={{ flex:1, overflowY:"auto", padding:14 }}>
             {messages.map((msg, i) => (
               <div key={i} style={{ marginBottom:14 }}>
