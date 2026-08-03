@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { API_BASE } from "../api";
 import useStore from "../store/useStore";
 
@@ -60,11 +60,23 @@ function StatRow({ label, value, highlight }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function ValidationPanel() {
-  const [repoPath, setRepoPath] = useState("/app");
+  const [repoPath, setRepoPath] = useState("");
+  const [repoStatus, setRepoStatus] = useState(null);
   const [vccInput, setVccInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState(null);
   const [error, setError] = useState("");
+
+  // Auto-fetch the last scanned project's git root
+  useEffect(() => {
+    fetch(`${API_BASE}/api/tdra/current-repo`)
+      .then((r) => r.json())
+      .then((data) => {
+        setRepoStatus(data);
+        if (data.repo_path) setRepoPath(data.repo_path);
+      })
+      .catch(() => {});
+  }, []);
 
   const handleRun = async () => {
     setLoading(true);
@@ -117,13 +129,28 @@ export default function ValidationPanel() {
       <div style={{ marginBottom: 10 }}>
         <label style={{ display: "block", fontSize: 11, color: "#8fa3bf", marginBottom: 4 }}>
           Repo path inside container
+          {repoStatus && (
+            <span style={{
+              marginLeft: 8, fontSize: 10, fontWeight: 600, padding: "1px 5px", borderRadius: 4,
+              background: repoStatus.git_available ? "#10B98120" : "#F59E0B20",
+              color: repoStatus.git_available ? "#10B981" : "#F59E0B",
+            }}>
+              {repoStatus.git_available ? "✓ git" : "⚠ no git"}
+            </span>
+          )}
         </label>
         <input
           value={repoPath}
           onChange={(e) => setRepoPath(e.target.value)}
+          placeholder="Auto-detected after scan…"
           style={{ width: "100%", boxSizing: "border-box", background: "#080c14", border: "1px solid #1e2d45",
             borderRadius: 4, padding: "5px 8px", color: "#e2e8f5", fontSize: 12, outline: "none" }}
         />
+        {repoStatus && !repoStatus.git_available && (
+          <div style={{ fontSize: 10, color: "#F59E0B", marginTop: 4 }}>
+            {repoStatus.message}
+          </div>
+        )}
       </div>
       <div style={{ marginBottom: 12 }}>
         <label style={{ display: "block", fontSize: 11, color: "#8fa3bf", marginBottom: 4 }}>

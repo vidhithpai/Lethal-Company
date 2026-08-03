@@ -31,12 +31,18 @@ const App = () => {
   }, []);
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/tdra/timeline?repo_path=/app&limit=50`)
+    // First resolve the correct repo path from the last scanned project,
+    // then load its timeline — avoids showing TDRA's own git history.
+    fetch(`${API_BASE}/api/tdra/current-repo`)
       .then(res => res.json())
       .then(data => {
-        if (Array.isArray(data)) {
-          setCommitTimeline(data);
-        }
+        const repoPath = data.repo_path;
+        if (!repoPath) return; // no project scanned yet
+        return fetch(`${API_BASE}/api/tdra/timeline?repo_path=${encodeURIComponent(repoPath)}&limit=50`);
+      })
+      .then(res => res && res.json())
+      .then(data => {
+        if (Array.isArray(data)) setCommitTimeline(data);
       })
       .catch(console.error);
   }, [setCommitTimeline]);
