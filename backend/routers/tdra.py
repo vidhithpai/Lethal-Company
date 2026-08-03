@@ -238,3 +238,38 @@ def get_risk_summary(repo_path: str = Query(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.get("/current-repo")
+def get_current_repo():
+    """
+    Returns the git root of the most recently scanned project.
+    The frontend uses this to auto-fill repo_path for timeline/validation
+    instead of defaulting to /app (the TDRA project itself).
+    """
+    try:
+        from backend.routers.scan import _scan_state
+        from backend.services.git_history import find_git_root
+
+        last_path = _scan_state.get("last_path")
+        if not last_path or not Path(last_path).exists():
+            return {
+                "repo_path": None,
+                "git_available": False,
+                "message": "No project scanned yet. Scan a project first.",
+            }
+
+        git_root = find_git_root(last_path)
+        git_available = git_root is not None and Path(git_root).is_dir()
+
+        return {
+            "repo_path": git_root or last_path,
+            "scanned_path": last_path,
+            "git_available": git_available,
+            "message": (
+                f"Using git root: {git_root}"
+                if git_available
+                else "Scanned project has no git history — upload a git repo to enable timeline"
+            ),
+        }
+    except Exception as e:
+        return {"repo_path": None, "git_available": False, "message": str(e)}

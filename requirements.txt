@@ -9,3 +9,5 @@ chromadb
 sentence-transformers
 groq
 gitpython
+scipy
+numpy

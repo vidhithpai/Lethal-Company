@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import useStore from "../store/useStore";
 import { API_BASE } from "../api";
+import ValidationPanel from "./ValidationPanel";
 
 export default function UnifiedPanel({
   selectedNode, attackPath, attackPaths, onPatch, onHighlightPath, onSelectNode
@@ -179,6 +180,10 @@ export default function UnifiedPanel({
         <button style={tabStyle(activeTab==="tdra")}
                 onClick={() => setActiveTab("tdra")}>
           TDRA Risk
+        </button>
+        <button style={tabStyle(activeTab==="validate")}
+                onClick={() => setActiveTab("validate")}>
+          📊 Validate
         </button>
       </div>
 
@@ -683,6 +688,13 @@ export default function UnifiedPanel({
               );
             })}
           </div>
+        </div>
+      )}
+
+      {/* STATISTICAL VALIDATION TAB */}
+      {activeTab === "validate" && (
+        <div style={{ flex: 1, overflowY: "auto", padding: 14 }}>
+          <ValidationPanel />
         </div>
       )}
     </div>

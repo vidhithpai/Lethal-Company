@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import useStore from "../store/useStore";
 import { API_BASE } from "../api";
 
@@ -12,9 +12,21 @@ export default function CommitTimeline() {
   const setNewPaths = useStore((state) => state.setNewPaths);
   const setRemovedGuards = useStore((state) => state.setRemovedGuards);
 
-  const [repoPath, setRepoPath] = useState("/app");
+  const [repoPath, setRepoPath] = useState("");
+  const [repoStatus, setRepoStatus] = useState({ git_available: null, message: "" });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  // On mount: auto-detect the last scanned project's git root
+  useEffect(() => {
+    fetch(`${API_BASE}/api/tdra/current-repo`)
+      .then((r) => r.json())
+      .then((data) => {
+        setRepoStatus(data);
+        if (data.repo_path) setRepoPath(data.repo_path);
+      })
+      .catch(() => setRepoStatus({ git_available: false, message: "Could not reach backend" }));
+  }, []);
 
   const handleCommitClick = async (commit) => {
     setSelectedCommit(commit);
@@ -94,6 +106,26 @@ export default function CommitTimeline() {
             }}
           />
         </div>
+
+        {/* Git availability banner */}
+        {repoStatus.git_available === false && (
+          <div style={{
+            background: "#F59E0B15", border: "1px solid #F59E0B40",
+            borderRadius: 5, padding: "5px 8px", fontSize: 10,
+            color: "#F59E0B", marginBottom: 8, lineHeight: 1.5,
+          }}>
+            ⚠ {repoStatus.message}
+          </div>
+        )}
+        {repoStatus.git_available === true && (
+          <div style={{
+            background: "#10B98115", border: "1px solid #10B98130",
+            borderRadius: 5, padding: "5px 8px", fontSize: 10,
+            color: "#10B981", marginBottom: 8,
+          }}>
+            ✓ {repoStatus.message}
+          </div>
+        )}
 
         {diffMode && (
           <button

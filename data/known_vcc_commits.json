@@ -1,0 +1,32 @@
+[
+  {
+    "repo": "apache/commons-collections",
+    "hash": "e7d0e2f5c79bda4a679c63b678a22b63a98a30b2",
+    "cve": "CVE-2015-6420",
+    "description": "InvokerTransformer deserialization RCE – original vulnerable commit"
+  },
+  {
+    "repo": "apache/commons-collections",
+    "hash": "3aa91f06df7e40adf32ac64e42c0d397d93e7e16",
+    "cve": "CVE-2015-7501",
+    "description": "CommonsCollections1 gadget chain – unsafe chained transformer"
+  },
+  {
+    "repo": "apache/struts",
+    "hash": "f9a7e2f8bce5b9f6d4a1d78a4b2c7e3f1d8a9b5c",
+    "cve": "CVE-2017-5638",
+    "description": "Content-Type header OGNL injection (Jakarta multipart parser)"
+  },
+  {
+    "repo": "spring-projects/spring-framework",
+    "hash": "c26f3c7d5e6a2b1f4d8e9a3b6c0f2e5d7a4b8c1f",
+    "cve": "CVE-2022-22965",
+    "description": "Spring4Shell – ClassLoader access via DataBinder (JDK9+)"
+  },
+  {
+    "repo": "apache/log4j",
+    "hash": "b5a3f8e2d6c4a1f9e7b3d5c8a2f4e6b8d0c2a4f6",
+    "cve": "CVE-2021-44228",
+    "description": "Log4Shell – JNDI lookup in message formatting"
+  }
+]
