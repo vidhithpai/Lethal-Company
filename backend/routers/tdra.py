@@ -259,8 +259,29 @@ def get_current_repo():
             }
 
         git_root = find_git_root(last_path)
-        git_available = git_root is not None and Path(git_root).is_dir()
 
+        # Guard: if the only git root found is /app itself (the TDRA container root)
+        # and the scanned project is a subdirectory of it (e.g. /app/demo_project),
+        # that means the project has no git history of its own — don't show TDRA's history.
+        CONTAINER_ROOT = Path("/app").resolve()
+        scanned = Path(last_path).resolve()
+        if git_root:
+            git_root_path = Path(git_root).resolve()
+            is_container_root_git = (git_root_path == CONTAINER_ROOT)
+            is_subdir_of_root = scanned != CONTAINER_ROOT and str(scanned).startswith(str(CONTAINER_ROOT))
+            if is_container_root_git and is_subdir_of_root:
+                return {
+                    "repo_path": None,
+                    "scanned_path": last_path,
+                    "git_available": False,
+                    "message": (
+                        f"Scanned project '{scanned.name}' has no git history. "
+                        "To use the timeline, scan a project that has its own .git folder "
+                        "or mount it via docker-compose.yml."
+                    ),
+                }
+
+        git_available = git_root is not None and Path(git_root).is_dir()
         return {
             "repo_path": git_root or last_path,
             "scanned_path": last_path,
@@ -273,3 +294,4 @@ def get_current_repo():
         }
     except Exception as e:
         return {"repo_path": None, "git_available": False, "message": str(e)}
+
