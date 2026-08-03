@@ -32,3 +32,6 @@ docker compose up --build
    vsce package
    ```
 3. Open VS Code, open the Command Palette (`Ctrl+Shift+P` or `Cmd+Shift+P`), choose **Extensions: Install from VSIX...**, and select the generated `vulngraph-0.1.0.vsix` file.
+
+## Demo Usage
+When you open a Python or Java file with VulnGraph backend running, green/red/purple highlights appear automatically on ENTRY/SINK/GUARD lines. No code is sent to any server — all analysis is local.

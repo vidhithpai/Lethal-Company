@@ -1,0 +1,8 @@
+.vscode/**
+node_modules/**
+**/*.ts
+**/.gitignore
+package-lock.json
+package.json
+install.sh
+README.md
