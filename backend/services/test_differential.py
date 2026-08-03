@@ -68,7 +68,18 @@ def run_test():
         assert res["parent_hash"] == parent_hash
         assert res["new_attack_paths"] > 0, "Should have detected the new attack path!"
         assert res["risk_factor"] > 0, "Risk factor should be > 0"
-        print("SUCCESS: Differential analysis validated successfully!")
+        
+        # Test risk summary endpoint logic
+        from backend.routers.tdra import get_risk_summary
+        summary = get_risk_summary(repo_path=repo_path)
+        print("Risk Summary Result:")
+        pprint.pprint(summary)
+        assert summary["total_commits_analyzed"] == 1
+        assert len(summary["critical_commits"]) > 0 or len(summary["high_commits"]) > 0 or summary["avg_risk_factor"] > 0
+        assert summary["avg_risk_factor"] == res["risk_factor"]
+        assert summary["riskiest_commit"]["commit_hash"] == commit_hash
+        
+        print("SUCCESS: Differential analysis and risk summary validated successfully!")
     except Exception as e:
         print(f"Test failed with exception: {e}")
         import traceback

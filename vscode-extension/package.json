@@ -1,0 +1,35 @@
+{
+  "name": "vulngraph",
+  "displayName": "VulnGraph Security Analyzer",
+  "description": "Real-time ENTRY/SINK/GUARD detection with local analysis",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "activationEvents": [
+    "onLanguage:python",
+    "onLanguage:java"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "vulngraph.analyzeFile",
+        "title": "VulnGraph: Analyze Current File"
+      },
+      {
+        "command": "vulngraph.analyzeWorkspace",
+        "title": "VulnGraph: Analyze Workspace"
+      }
+    ],
+    "configuration": {
+      "properties": {
+        "vulngraph.backendUrl": {
+          "type": "string",
+          "default": "http://localhost:8001",
+          "description": "VulnGraph backend URL (default: local)"
+        }
+      }
+    }
+  }
+}
