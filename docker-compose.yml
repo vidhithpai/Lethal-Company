@@ -16,6 +16,8 @@ services:
       # Mount demo_project so users can also scan local folders by path
       - ./demo_project:/app/demo_project:ro
       - ./sample_project:/app/sample_project:ro
+      # Mount .git directory to allow analyzing the repo itself
+      - ./.git:/app/.git:ro
       # Optional: mount an external project to scan — uncomment and change path
       # - /path/to/your/project:/app/target_project:ro
     healthcheck:

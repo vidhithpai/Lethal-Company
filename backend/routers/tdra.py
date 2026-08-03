@@ -76,6 +76,11 @@ def get_commit_analysis(commit_hash: str, repo_path: str = Query(...)):
 
 @router.get("/timeline")
 def get_timeline(repo_path: str = Query(...), limit: int = Query(20)):
+    """
+    Lightweight timeline endpoint — reads commit metadata and approximates
+    the risk factor from diff stats WITHOUT checking out any commit.
+    This means it returns instantly even for large repos.
+    """
     repo_path = (repo_path or "").strip()
     if not repo_path:
         raise HTTPException(status_code=400, detail="repo_path is required")
@@ -88,19 +93,82 @@ def get_timeline(repo_path: str = Query(...), limit: int = Query(20)):
         )
 
     try:
-        engine = DifferentialEngine(repo_path)
-        pairs = engine.get_commit_pairs(limit=limit)
+        import git as gitlib
+        repo = gitlib.Repo(repo_path)
+        commits = list(repo.iter_commits(max_count=limit))
         results = []
-        for parent_hash, commit_hash in pairs:
-            try:
-                res = engine.analyze_commit(parent_hash, commit_hash)
-                results.append(res)
-            except Exception as e:
-                print(f"Error analyzing commit pair {parent_hash} -> {commit_hash} for timeline: {e}")
-                continue
 
-        # Sort by date descending (newest first) for timeline view
-        results.sort(key=lambda x: x["date"], reverse=True)
+        for commit in commits:
+            # Count changed lines in Python/Java files via diff stats
+            py_java_insertions = 0
+            py_java_deletions = 0
+            guard_removals = 0  # heuristic: lines with sanitize/guard/validate removed
+
+            if commit.parents:
+                try:
+                    diffs = commit.parents[0].diff(commit, create_patch=True)
+                    for diff in diffs:
+                        fname = diff.b_path or diff.a_path or ""
+                        if not (fname.endswith(".py") or fname.endswith(".java")):
+                            continue
+                        patch = diff.diff.decode("utf-8", errors="ignore") if diff.diff else ""
+                        for line in patch.splitlines():
+                            if line.startswith("+") and not line.startswith("+++"):
+                                py_java_insertions += 1
+                            elif line.startswith("-") and not line.startswith("---"):
+                                py_java_deletions += 1
+                                # heuristic: guard removal if line mentions common sanitizer patterns
+                                lower = line.lower()
+                                if any(kw in lower for kw in [
+                                    "sanitize", "escape", "validate", "guard",
+                                    "safe", "clean", "filter", "check"
+                                ]):
+                                    guard_removals += 1
+                except Exception:
+                    pass
+
+            # RF approximation: normalize by total changed lines
+            total_changed = max(py_java_insertions + py_java_deletions, 1)
+            # Paths introduced ≈ insertions / 20 (rough: 20 lines = 1 path segment)
+            delta_paths_approx = py_java_insertions / 20.0
+            delta_guards_approx = guard_removals
+
+            alpha, beta = 0.6, 0.4
+            p_base = max(total_changed / 10.0, 1.0)
+            g_base = max(total_changed / 5.0, 1.0)
+            RF = round(
+                alpha * (delta_paths_approx / p_base) +
+                beta * (delta_guards_approx / g_base),
+                4
+            )
+            RF = min(RF, 1.0)
+
+            if RF < 0.2:
+                severity = "Low"
+            elif RF < 0.45:
+                severity = "Medium"
+            elif RF < 0.7:
+                severity = "High"
+            else:
+                severity = "Critical"
+
+            results.append({
+                "commit_hash": commit.hexsha,
+                "parent_hash": commit.parents[0].hexsha if commit.parents else None,
+                "author": commit.author.name,
+                "date": commit.authored_datetime.isoformat(),
+                "message": commit.message.strip(),
+                "new_attack_paths": round(delta_paths_approx),
+                "guard_weakening_events": guard_removals,
+                "paths_before": 0,
+                "paths_after": round(delta_paths_approx),
+                "risk_factor": RF,
+                "severity": severity,
+                "new_paths_detail": [],
+                "removed_guards": [],
+                "approx": True,  # flag indicating this is a fast approximation
+            })
+
         return results
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -96,6 +96,13 @@ class DifferentialEngine:
         elif RF < 0.7: severity = "High"
         else: severity = "Critical"
         
+        # Identify guards present in G_prev but no longer guards in G_curr
+        removed_guards = [
+            node for node, data in G_prev.nodes(data=True)
+            if data.get('type') == 'sanitizer' and
+            (node not in G_curr or G_curr.nodes[node].get('type') != 'sanitizer')
+        ]
+        
         commit_obj = self.repo.commit(commit_hash)
         
         return {
@@ -110,5 +117,6 @@ class DifferentialEngine:
             "paths_after": len(R_curr),
             "risk_factor": RF,
             "severity": severity,
-            "new_paths_detail": [list(p)[:8] for p in list(new_paths)[:5]]
+            "new_paths_detail": [list(p)[:8] for p in list(new_paths)[:5]],
+            "removed_guards": removed_guards
         }

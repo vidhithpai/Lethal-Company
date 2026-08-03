@@ -2,7 +2,8 @@ import { useEffect, useState, useRef } from "react";
 import GraphCanvas from "./components/GraphCanvas";
 import MetricsBar from "./components/MetricsBar";
 import UnifiedPanel from "./components/UnifiedPanel";
-import { endpoints, normalizeGraph } from "./api";
+import CommitTimeline from "./components/CommitTimeline";
+import { endpoints, normalizeGraph, API_BASE } from "./api";
 import useStore from "./store/useStore";
 
 const App = () => {
@@ -16,6 +17,7 @@ const App = () => {
   const attackPath = useStore((state) => state.path);
   const setPath = useStore((state) => state.setPath);
   const patchNodeLocal = useStore((state) => state.patchNodeLocal);
+  const setCommitTimeline = useStore((state) => state.setCommitTimeline);
   
   const [highlightedPathIndex, setHighlightedPathIndex] = useState(null);
   const [attackPaths, setAttackPaths] = useState([]);
@@ -27,6 +29,17 @@ const App = () => {
       .then(data => setAttackPaths(data.paths || data))
       .catch(console.error);
   }, []);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/tdra/timeline?repo_path=/app&limit=50`)
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          setCommitTimeline(data);
+        }
+      })
+      .catch(console.error);
+  }, [setCommitTimeline]);
 
   useEffect(() => {
     if (highlightedPathIndex === null || !attackPaths.length) return;
@@ -157,6 +170,7 @@ const App = () => {
             }}
           />
         </div>
+        <CommitTimeline />
       </div>
     </div>
   );

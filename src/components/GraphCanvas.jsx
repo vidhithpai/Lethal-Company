@@ -80,23 +80,47 @@ const GraphLegend = () => (
 );
 
 // ─── Custom Three.js object per node ─────────────────────────────────────────
-function buildNodeObject(node, isOnPath) {
+function buildNodeObject(node, isOnPath, diffMode, isOnNewPath, isRemovedGuard) {
   const group = new THREE.Group();
   const nodeType = String(node.type || '').toLowerCase();
   const radius = getNodeSize(node) / 2;
-  const color  = getNodeColor(node);
+  
+  // Decide node color and opacity
+  let color = getNodeColor(node);
+  let opacity = node.patched ? 0.45 : (nodeType === 'normal' ? 0.72 : 1.0);
+
+  if (diffMode) {
+    if (isOnNewPath) {
+      color = "#FF0000";
+      opacity = 1.0;
+    } else if (isRemovedGuard) {
+      color = "#666666";
+      opacity = 0.4;
+    } else {
+      opacity = 0.3; // faded out other nodes
+    }
+  }
 
   // Sphere
   const geometry = new THREE.SphereGeometry(radius, 16, 16);
-  const material = new THREE.MeshLambertMaterial({
+  const material = new THREE.MeshStandardMaterial({
     color,
     transparent: true,
-    opacity: node.patched ? 0.45 : (nodeType === 'normal' ? 0.72 : 1.0),
+    opacity,
+    roughness: 0.3,
+    metalness: 0.1
   });
+  
+  // If in diffMode and on a new attack path, enable emissive color so it can pulse
+  if (diffMode && isOnNewPath) {
+    material.emissive = new THREE.Color(0xff0000);
+    material.emissiveIntensity = 0.8;
+  }
+  
   group.add(new THREE.Mesh(geometry, material));
 
   // Risk ring shell for sinks (emissive shell slightly larger)
-  if (nodeType === "sink" && node.risk) {
+  if (!diffMode && nodeType === "sink" && node.risk) {
     const riskCol = RISK_COLORS[node.risk.toLowerCase()] || "#ef4444";
     const ringGeo = new THREE.SphereGeometry(radius + 1.5, 16, 16);
     const ringMat = new THREE.MeshLambertMaterial({
@@ -109,7 +133,7 @@ function buildNodeObject(node, isOnPath) {
   }
 
   // Glow ring for path nodes
-  if (isOnPath && !node.patched) {
+  if (!diffMode && isOnPath && !node.patched) {
     const glowGeo = new THREE.SphereGeometry(radius + 2.5, 16, 16);
     const glowMat = new THREE.MeshLambertMaterial({
       color,
@@ -119,14 +143,47 @@ function buildNodeObject(node, isOnPath) {
     group.add(new THREE.Mesh(glowGeo, glowMat));
   }
 
+  // Glowing ring for new path nodes using RingGeometry (Task 3: "Add a glowing ring around them using THREE.RingGeometry")
+  if (diffMode && isOnNewPath) {
+    const ringGeo = new THREE.RingGeometry(radius + 1.2, radius + 2.4, 32);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0xff0000,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.6
+    });
+    const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+    // Orient the ring flat (pointing upwards or towards camera)
+    ringMesh.rotation.x = Math.PI / 2;
+    group.add(ringMesh);
+  }
+
   // Floating text label
-  const rawLabel = node.label || (node.id ? node.id.split(":").pop() : "?");
-  const label    = rawLabel.length > 24 ? rawLabel.slice(0, 24) + "…" : rawLabel;
-  const sprite   = new SpriteText(label);
-  sprite.color        = node.patched ? "#6B7280" : (isOnPath ? "#ffffff" : "#c8d4e8");
-  sprite.textHeight   = isOnPath ? 3.2 : (nodeType === 'normal' ? 2.0 : 2.4);
-  sprite.fontFace     = "JetBrains Mono, monospace";
-  if (node.patched) {
+  let rawLabel = node.label || (node.id ? node.id.split(":").pop() : "?");
+  if (diffMode && isRemovedGuard) {
+    rawLabel = "~~" + rawLabel + "~~";
+  }
+  const label = rawLabel.length > 24 ? rawLabel.slice(0, 24) + "…" : rawLabel;
+  const sprite = new SpriteText(label);
+  
+  if (diffMode) {
+    if (isOnNewPath) {
+      sprite.color = "#FF3333";
+      sprite.textHeight = 3.2;
+    } else if (isRemovedGuard) {
+      sprite.color = "#666666";
+      sprite.textHeight = 2.0;
+    } else {
+      sprite.color = "#4a6080";
+      sprite.textHeight = 1.6;
+    }
+  } else {
+    sprite.color = node.patched ? "#6B7280" : (isOnPath ? "#ffffff" : "#c8d4e8");
+    sprite.textHeight = isOnPath ? 3.2 : (nodeType === 'normal' ? 2.0 : 2.4);
+  }
+  
+  sprite.fontFace = "JetBrains Mono, monospace";
+  if (node.patched && !diffMode) {
     sprite.textHeight = 2.2;
     sprite.strokeWidth = 0.5;
     sprite.strokeColor = "#374151";
@@ -141,6 +198,11 @@ function buildNodeObject(node, isOnPath) {
 const GraphCanvas = ({ onNodeClick }) => {
   const graph        = useStore((state) => state.graph);
   const path         = useStore((state) => state.path);
+  const diffMode     = useStore((state) => state.diffMode);
+  const setDiffMode  = useStore((state) => state.setDiffMode);
+  const newPaths     = useStore((state) => state.newPaths);
+  const removedGuards = useStore((state) => state.removedGuards);
+
   const containerRef = useRef(null);
   const graphRef     = useRef(null);
   const [size, setSize] = useState({ width: 800, height: 600 });
@@ -170,6 +232,64 @@ const GraphCanvas = ({ onNodeClick }) => {
     return s;
   }, [path]);
 
+  // Diff Mode node/edge maps
+  const newPathsNodeSet = useMemo(() => {
+    const s = new Set();
+    if (newPaths) {
+      newPaths.forEach(pathArr => {
+        if (Array.isArray(pathArr)) {
+          pathArr.forEach(nid => s.add(nid));
+        }
+      });
+    }
+    return s;
+  }, [newPaths]);
+
+  const newPathsEdgeSet = useMemo(() => {
+    const s = new Set();
+    if (newPaths) {
+      newPaths.forEach(pathArr => {
+        if (Array.isArray(pathArr)) {
+          for (let i = 0; i < pathArr.length - 1; i++) {
+            s.add(`${pathArr[i]}->${pathArr[i+1]}`);
+          }
+        }
+      });
+    }
+    return s;
+  }, [newPaths]);
+
+  const removedGuardsSet = useMemo(() => {
+    return new Set(Array.isArray(removedGuards) ? removedGuards : []);
+  }, [removedGuards]);
+
+  // Pulsing emissive animation loop for new paths nodes under diffMode
+  useEffect(() => {
+    let animFrameId;
+    const pulse = () => {
+      const time = Date.now() * 0.005;
+      const intensity = Math.sin(time) * 0.4 + 0.6; // oscillates between 0.2 and 1.0
+      
+      if (diffMode && graph?.nodes) {
+        graph.nodes.forEach(node => {
+          if (node.__threeObj && newPathsNodeSet.has(node.id)) {
+            node.__threeObj.traverse(child => {
+              if (child.isMesh && child.material) {
+                if (child.material.emissive) {
+                  child.material.emissive.setHex(0xff0000);
+                  child.material.emissiveIntensity = intensity;
+                }
+              }
+            });
+          }
+        });
+      }
+      animFrameId = requestAnimationFrame(pulse);
+    };
+    pulse();
+    return () => cancelAnimationFrame(animFrameId);
+  }, [diffMode, graph, newPathsNodeSet]);
+
   // One-time zoom after initial graph load
   useEffect(() => {
     if (graphRef.current) {
@@ -182,8 +302,6 @@ const GraphCanvas = ({ onNodeClick }) => {
   useEffect(() => {
     if (!zoomTrigger || !graphRef.current || !path.length) return;
 
-    // Force-graph mutates x/y/z directly on the node objects in the store,
-    // so we can read positions straight from the Zustand graph nodes.
     const storeNodes = useStore.getState().graph.nodes;
     const pathNodes  = path
       .map((id) => storeNodes.find((n) => n.id === id))
@@ -213,6 +331,29 @@ const GraphCanvas = ({ onNodeClick }) => {
       ref={containerRef}
       style={{ position: "relative", width: "100%", height: "100%" }}
     >
+      {/* Diff Mode Toggle Button Overlay */}
+      <button
+        onClick={() => setDiffMode(!diffMode)}
+        style={{
+          position: "absolute",
+          top: 16,
+          left: 16,
+          background: diffMode ? "#EF444420" : "#1F293780",
+          color: diffMode ? "#EF4444" : "#9CA3AF",
+          border: `1px solid ${diffMode ? "#EF444440" : "#374151"}`,
+          borderRadius: 6,
+          padding: "6px 12px",
+          fontSize: 12,
+          fontWeight: 600,
+          cursor: "pointer",
+          zIndex: 10,
+          backdropFilter: "blur(4px)",
+          transition: "all 0.2s"
+        }}
+      >
+        {diffMode ? "🔴 DIFF MODE ON" : "⚪ DIFF MODE OFF"}
+      </button>
+
       <ForceGraph3D
         ref={graphRef}
         width={size.width}
@@ -224,7 +365,13 @@ const GraphCanvas = ({ onNodeClick }) => {
           `${node.label || node.id} · ${node.type || "node"} · line ${node.line || "?"}`
         }
         nodeThreeObject={(node) =>
-          buildNodeObject(node, pathNodeSet.has(node.id))
+          buildNodeObject(
+            node,
+            pathNodeSet.has(node.id),
+            diffMode,
+            newPathsNodeSet.has(node.id),
+            removedGuardsSet.has(node.id)
+          )
         }
         nodeThreeObjectExtend={false}  // our group IS the whole object
         onNodeClick={(node) => onNodeClick(node)}
@@ -236,11 +383,13 @@ const GraphCanvas = ({ onNodeClick }) => {
         linkWidth={(link) => {
           const s = link.source?.id || link.source;
           const t = link.target?.id || link.target;
+          if (diffMode && newPathsEdgeSet.has(`${s}->${t}`)) return 3.0; // thick red lines (width 3px)
           return pathEdgeSet.has(`${s}->${t}`) ? 3.5 : 1;
         }}
         linkColor={(link) => {
           const s = link.source?.id || link.source;
           const t = link.target?.id || link.target;
+          if (diffMode && newPathsEdgeSet.has(`${s}->${t}`)) return "#FF4444"; // color #FF4444
           return getEdgeColor(link, pathEdgeSet.has(`${s}->${t}`));
         }}
         linkOpacity={0.7}
@@ -249,6 +398,7 @@ const GraphCanvas = ({ onNodeClick }) => {
         linkDirectionalParticles={(link) => {
           const s = link.source?.id || link.source;
           const t = link.target?.id || link.target;
+          if (diffMode && newPathsEdgeSet.has(`${s}->${t}`)) return 5;
           return pathEdgeSet.has(`${s}->${t}`) ? 5 : 0;
         }}
         linkDirectionalParticleWidth={2.5}

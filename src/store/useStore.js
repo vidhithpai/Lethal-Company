@@ -39,6 +39,19 @@ const useStore = create((set, get) => ({
   // GraphCanvas watches this; every increment fires a zoomToFit()
   zoomTrigger: 0,
   bumpZoom: () => set({ zoomTrigger: get().zoomTrigger + 1 }),
+
+  // ── TDRA visualizer state ─────────────────────────────────────────────────
+  diffMode:       false,
+  selectedCommit: null,
+  commitTimeline: [],
+  newPaths:       [],
+  removedGuards:  [],
+
+  setDiffMode:       (diffMode)       => set({ diffMode }),
+  setSelectedCommit: (selectedCommit) => set({ selectedCommit }),
+  setCommitTimeline: (commitTimeline) => set({ commitTimeline }),
+  setNewPaths:       (newPaths)       => set({ newPaths }),
+  setRemovedGuards:  (removedGuards)  => set({ removedGuards }),
 }));
 
 export default useStore;
