@@ -741,3 +741,10 @@ def resolve_node_ref(ref: str, *, node_type: str | None = None) -> str | None:
             return nid
 
     return None
+
+
+def build_graph_for_path(path: str) -> nx.DiGraph:
+    config = SecurityGraphConfig(root_dir=Path(path))
+    res = build_security_graph(config)
+    return res["graph"]
+

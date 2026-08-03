@@ -21,6 +21,37 @@ export default function UnifiedPanel({
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
   const chatEndRef = useRef(null);
 
+  const [tdraRepoPath, setTdraRepoPath] = useState("/app");
+  const [tdraLimit, setTdraLimit] = useState(20);
+  const [tdraCommits, setTdraCommits] = useState([]);
+  const [tdraLoading, setTdraLoading] = useState(false);
+  const [tdraError, setTdraError] = useState("");
+  const [expandedCommit, setExpandedCommit] = useState(null);
+
+  const fetchTdraTimeline = async () => {
+    if (!tdraRepoPath.trim()) {
+      setTdraError("Repository path is required");
+      return;
+    }
+    setTdraLoading(true);
+    setTdraError("");
+    setTdraCommits([]);
+    try {
+      const res = await fetch(`${API_BASE}/api/tdra/timeline?repo_path=${encodeURIComponent(tdraRepoPath.trim())}&limit=${tdraLimit}`);
+      if (res.ok) {
+        const data = await res.json();
+        setTdraCommits(data);
+      } else {
+        const err = await res.json();
+        setTdraError(err.detail || err.error || "Failed to fetch timeline");
+      }
+    } catch (e) {
+      setTdraError("Connection error. Is the backend running?");
+    } finally {
+      setTdraLoading(false);
+    }
+  };
+
   // Auto-switch to node tab when node selected
   useEffect(() => {
     if (selectedNode) {
@@ -144,6 +175,10 @@ export default function UnifiedPanel({
         <button style={tabStyle(activeTab==="chat")}
                 onClick={() => setActiveTab("chat")}>
           AI chat
+        </button>
+        <button style={tabStyle(activeTab==="tdra")}
+                onClick={() => setActiveTab("tdra")}>
+          TDRA Risk
         </button>
       </div>
 
@@ -471,6 +506,182 @@ export default function UnifiedPanel({
               }}>
               Ask
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* TDRA TIMELINE TAB */}
+      {activeTab === "tdra" && (
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {/* Header controls */}
+          <div style={{ padding: 14, borderBottom: "1px solid #1F2937", background: "#1F293750" }}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8, color: "#3B82F6" }}>
+              TDRA Commit Risk Timeline
+            </div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+              <input
+                type="text"
+                value={tdraRepoPath}
+                onChange={e => setTdraRepoPath(e.target.value)}
+                placeholder="Repository Path (e.g. /app)"
+                style={{
+                  flex: 1, background: "#111827", border: "1px solid #374151",
+                  borderRadius: 6, padding: "6px 10px", color: "#F9FAFB",
+                  fontSize: 12, outline: "none"
+                }}
+              />
+              <select
+                value={tdraLimit}
+                onChange={e => setTdraLimit(Number(e.target.value))}
+                style={{
+                  background: "#111827", border: "1px solid #374151",
+                  borderRadius: 6, padding: "6px 6px", color: "#F9FAFB",
+                  fontSize: 12, outline: "none"
+                }}
+              >
+                <option value={10}>10</option>
+                <option value={20}>20</option>
+                <option value={50}>50</option>
+              </select>
+            </div>
+            <button
+              onClick={fetchTdraTimeline}
+              disabled={tdraLoading}
+              style={{
+                width: "100%", padding: "8px 0", background: "#1D4ED8",
+                color: "#fff", border: "none", borderRadius: 6,
+                cursor: tdraLoading ? "not-allowed" : "pointer",
+                fontSize: 12, fontWeight: 500
+              }}
+            >
+              {tdraLoading ? "Analyzing repository commits..." : "Analyze Repository"}
+            </button>
+          </div>
+
+          {/* Timeline content */}
+          <div style={{ flex: 1, overflowY: "auto", padding: 14 }}>
+            {tdraError && (
+              <div style={{ color: "#EF4444", background: "#EF444410", padding: 10, borderRadius: 6, fontSize: 12, marginBottom: 12 }}>
+                {tdraError}
+              </div>
+            )}
+
+            {!tdraLoading && tdraCommits.length === 0 && !tdraError && (
+              <div style={{ color: "#6B7280", textAlign: "center", marginTop: 40, fontSize: 12 }}>
+                Click "Analyze Repository" to load commit risk factor timeline
+              </div>
+            )}
+
+            {tdraCommits.map((commit) => {
+              const isExpanded = expandedCommit === commit.commit_hash;
+              const sevColor = {
+                Critical: "#EF4444", High: "#F97316",
+                Medium: "#F59E0B", Low: "#10B981"
+              }[commit.severity] || "#6B7280";
+
+              return (
+                <div key={commit.commit_hash} style={{
+                  borderLeft: `2px solid ${sevColor}`,
+                  paddingLeft: 12,
+                  marginBottom: 16,
+                  position: "relative"
+                }}>
+                  {/* Small circle indicator on the timeline */}
+                  <div style={{
+                    position: "absolute",
+                    left: -5,
+                    top: 4,
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    background: sevColor,
+                    boxShadow: `0 0 6px ${sevColor}`
+                  }} />
+
+                  {/* Commit info header */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
+                    <code style={{ fontSize: 11, color: "#60A5FA", fontWeight: 600 }}>
+                      {commit.commit_hash.slice(0, 7)}
+                    </code>
+                    <span style={{
+                      fontSize: 10,
+                      fontWeight: 600,
+                      color: sevColor,
+                      background: `${sevColor}15`,
+                      padding: "1px 6px",
+                      borderRadius: 4
+                    }}>
+                      {commit.severity} (RF: {commit.risk_factor})
+                    </span>
+                  </div>
+
+                  <div style={{ fontSize: 12, color: "#E5E7EB", fontWeight: 500, marginBottom: 2 }}>
+                    {commit.message.split("\n")[0]}
+                  </div>
+
+                  <div style={{ fontSize: 10, color: "#6B7280", marginBottom: 6 }}>
+                    by {commit.author} on {new Date(commit.date).toLocaleDateString()}
+                  </div>
+
+                  <div style={{ display: "flex", gap: 12, fontSize: 11, color: "#9CA3AF" }}>
+                    <div>
+                      <span style={{ color: commit.new_attack_paths > 0 ? "#EF4444" : "#9CA3AF" }}>
+                        +{commit.new_attack_paths}
+                      </span> new paths
+                    </div>
+                    <div>
+                      <span style={{ color: commit.guard_weakening_events > 0 ? "#F97316" : "#9CA3AF" }}>
+                        {commit.guard_weakening_events}
+                      </span> weakenings
+                    </div>
+                  </div>
+
+                  {/* Expand button for paths detail */}
+                  {commit.new_attack_paths > 0 && (
+                    <div style={{ marginTop: 8 }}>
+                      <button
+                        onClick={() => setExpandedCommit(isExpanded ? null : commit.commit_hash)}
+                        style={{
+                          background: "none", border: "none", color: "#3B82F6",
+                          padding: 0, cursor: "pointer", fontSize: 11, display: "flex",
+                          alignItems: "center", gap: 4
+                        }}
+                      >
+                        {isExpanded ? "▼ Hide introduced paths" : "▶ View introduced paths"}
+                      </button>
+
+                      {isExpanded && commit.new_paths_detail && (
+                        <div style={{
+                          marginTop: 6, background: "#111827", borderRadius: 6,
+                          padding: 8, border: "1px solid #1F2937", display: "flex",
+                          flexDirection: "column", gap: 6
+                        }}>
+                          {commit.new_paths_detail.map((pathNodes, pIdx) => (
+                            <div key={pIdx} style={{
+                              padding: "4px 6px", borderBottom: pIdx < commit.new_paths_detail.length - 1 ? "1px dashed #1F2937" : "none"
+                            }}>
+                              <div style={{ fontSize: 10, color: "#3B82F6", marginBottom: 2, fontWeight: 600 }}>
+                                Path #{pIdx + 1}:
+                              </div>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                                {pathNodes.map((nodeId, nIdx) => (
+                                  <div key={nIdx} style={{
+                                    fontFamily: "monospace", fontSize: 10, color: "#9CA3AF",
+                                    paddingLeft: 8, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis"
+                                  }}>
+                                    ↳ {nodeId.split(':').pop()}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
