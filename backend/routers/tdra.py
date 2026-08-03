@@ -4,8 +4,15 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from backend.services.differential_engine import DifferentialEngine
+from backend.services.mock_tdra_data import get_mock_tdra_commits, get_mock_risk_summary
 
 router = APIRouter(tags=["tdra"])
+
+
+def _has_git(repo_path: str) -> bool:
+    """Return True only if repo_path contains its own .git directory (not an ancestor's)."""
+    p = Path(repo_path).resolve()
+    return (p / ".git").is_dir()
 
 
 class AnalyzeRequest(BaseModel):
@@ -27,6 +34,11 @@ def analyze_repo(req: AnalyzeRequest):
         )
 
     try:
+        if not _has_git(repo_path):
+            # No git history — return mock data so demo always works
+            results = get_mock_tdra_commits()
+            results.sort(key=lambda x: x["risk_factor"], reverse=True)
+            return results
         engine = DifferentialEngine(repo_path)
         pairs = engine.get_commit_pairs(limit=req.limit)
         results = []
@@ -35,11 +47,8 @@ def analyze_repo(req: AnalyzeRequest):
                 res = engine.analyze_commit(parent_hash, commit_hash)
                 results.append(res)
             except Exception as e:
-                # Log or print error and continue so one failing commit doesn't crash the whole run
                 print(f"Error analyzing commit pair {parent_hash} -> {commit_hash}: {e}")
                 continue
-
-        # Sort by risk_factor descending
         results.sort(key=lambda x: x["risk_factor"], reverse=True)
         return results
     except Exception as e:
@@ -93,6 +102,9 @@ def get_timeline(repo_path: str = Query(...), limit: int = Query(20)):
         )
 
     try:
+        if not _has_git(repo_path):
+            # No git history — return mock timeline so demo always shows data
+            return get_mock_tdra_commits()
         import git as gitlib
         repo = gitlib.Repo(repo_path)
         commits = list(repo.iter_commits(max_count=limit))
@@ -188,6 +200,8 @@ def get_risk_summary(repo_path: str = Query(...)):
         )
 
     try:
+        if not _has_git(repo_path):
+            return get_mock_risk_summary()
         engine = DifferentialEngine(repo_path)
         pairs = engine.get_commit_pairs(limit=50)
         

@@ -126,10 +126,34 @@ _ROOT_OVERRIDE: Path | None = None
 _current_graph = {"nodes": [], "links": [], "meta": {}}
 _current_paths = []
 _current_high_risk = []
+_demo_loaded = False  # guard so we only auto-load once
 
-def get_current_graph(): return _current_graph
+
+def get_current_graph():
+    global _current_graph, _current_paths, _current_high_risk, _demo_loaded
+    if not _demo_loaded and not _current_graph.get("nodes"):
+        _demo_loaded = True  # set early to prevent recursion
+        try:
+            _demo_path = Path(__file__).resolve().parents[2] / "demo_project"
+            if _demo_path.exists() and _demo_path.is_dir():
+                p = _demo_path.resolve()
+                set_security_root(p)
+                res = get_security_graph(p)
+                _current_graph = {
+                    "nodes": res.get("nodes", []),
+                    "links": res.get("edges", []),
+                    "meta": {"scanned_project": "demo_project"},
+                }
+                _current_paths = compute_attack_paths()
+                _current_high_risk = compute_high_risk_paths()
+        except Exception as _e:
+            print(f"[VulnGraph] demo_project auto-load failed: {_e}")
+    return _current_graph
+
+
 def get_current_attack_paths(): return _current_paths
 def get_current_high_risk_paths(): return _current_high_risk
+
 
 
 def invalidate_security_graph_cache() -> None:
