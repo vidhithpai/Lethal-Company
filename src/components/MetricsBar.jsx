@@ -5,7 +5,7 @@ import { API_BASE } from "../api";
 const MetricsBar = ({ onScan, attackPaths = [], highlightedPathIndex, onHighlightPath }) => {
   const graph = useStore((state) => state.graph);
   const loading = useStore((state) => state.loading);
-  
+
   // Zustand Layer and Diff states
   const activeLayer = useStore((state) => state.activeLayer);
   const setActiveLayer = useStore((state) => state.setActiveLayer);
@@ -42,10 +42,10 @@ const MetricsBar = ({ onScan, attackPaths = [], highlightedPathIndex, onHighligh
       const criticalSinks = nodes.filter((n) => n.type === "sink" && (n.risk === "CRITICAL" || n.risk === "HIGH")).length;
       const patched = nodes.filter((n) => n.patched).length;
       const guards = nodes.filter((n) => n.type === "sanitizer").length;
-      
+
       // Calculate Guard Coverage Percentage
       const totalSinksAndIntermediate = nodes.filter(n => n.type === "sink" || n.type === "intermediate").length;
-      const guardCoverage = totalSinksAndIntermediate > 0 
+      const guardCoverage = totalSinksAndIntermediate > 0
         ? Math.round((guards / totalSinksAndIntermediate) * 100)
         : 0;
 
@@ -104,11 +104,11 @@ const MetricsBar = ({ onScan, attackPaths = [], highlightedPathIndex, onHighligh
     <div className="dashboard-metrics-container">
       {/* Modification 16: Modern Metric Dashboard Cards */}
       <div className="metrics-row">
-        
+
         {/* Metric 1: Overall Risk */}
         <div className="metric-card">
-          <div className="metric-icon-wrap" style={{ color: getRiskColor(metrics.overallRisk) }}>
-            🛡️
+          <div className="metric-card-label">
+            Overall Risk
           </div>
           <div className="metric-card-content">
             <span className="metric-card-value" style={{ color: getRiskColor(metrics.overallRisk) }}>
@@ -123,9 +123,7 @@ const MetricsBar = ({ onScan, attackPaths = [], highlightedPathIndex, onHighligh
 
         {/* Metric 2: Reachable Sinks */}
         <div className="metric-card">
-          <div className="metric-icon-wrap" style={{ color: "var(--color-sink)" }}>
-            💥
-          </div>
+
           <div className="metric-card-content">
             <span className="metric-card-value">{metrics.sinks}</span>
             <span className="metric-card-label">Reachable Sinks</span>
@@ -137,9 +135,7 @@ const MetricsBar = ({ onScan, attackPaths = [], highlightedPathIndex, onHighligh
 
         {/* Metric 3: Guard Coverage */}
         <div className="metric-card">
-          <div className="metric-icon-wrap" style={{ color: "var(--accent-purple)" }}>
-            ⚡
-          </div>
+
           <div className="metric-card-content">
             <span className="metric-card-value">{metrics.guardCoverage}%</span>
             <span className="metric-card-label">Guard Coverage</span>
@@ -151,9 +147,7 @@ const MetricsBar = ({ onScan, attackPaths = [], highlightedPathIndex, onHighligh
 
         {/* Metric 4: Attack Paths */}
         <div className="metric-card">
-          <div className="metric-icon-wrap" style={{ color: "var(--color-intermediate)" }}>
-            🎯
-          </div>
+
           <div className="metric-card-content">
             <span className="metric-card-value">{attackPaths.length}</span>
             <span className="metric-card-label">Attack Vectors</span>
@@ -165,9 +159,7 @@ const MetricsBar = ({ onScan, attackPaths = [], highlightedPathIndex, onHighligh
 
         {/* Metric 5: Patched Nodes */}
         <div className="metric-card">
-          <div className="metric-icon-wrap" style={{ color: "var(--accent-emerald)" }}>
-            ✅
-          </div>
+
           <div className="metric-card-content">
             <span className="metric-card-value">{metrics.patched}</span>
             <span className="metric-card-label">Neutralized Sinks</span>
@@ -181,7 +173,7 @@ const MetricsBar = ({ onScan, attackPaths = [], highlightedPathIndex, onHighligh
 
       {/* Action panel row: Toggles & Timeline */}
       <div className="metrics-action-row">
-        
+
         {/* Layer Selection Toggle (Modification 12) */}
         <div className="layer-toggles-container">
           {layers.map((layer) => (
@@ -194,7 +186,6 @@ const MetricsBar = ({ onScan, attackPaths = [], highlightedPathIndex, onHighligh
                 setDiffMode(layer.id === "differential");
               }}
             >
-              {layer.id === "differential" ? "🕒 " : "📊 "}
               {layer.label}
             </button>
           ))}
@@ -203,7 +194,7 @@ const MetricsBar = ({ onScan, attackPaths = [], highlightedPathIndex, onHighligh
         {/* Upload & Reports actions */}
         <div className="action-buttons-wrap">
           <button className="cyber-button green" onClick={onScan}>
-            <span>⚡</span> Scan New Codebase
+            Scan New Codebase
           </button>
           <button className="cyber-button" onClick={() => downloadReport("html")}>
             HTML Report
@@ -218,7 +209,7 @@ const MetricsBar = ({ onScan, attackPaths = [], highlightedPathIndex, onHighligh
       {/* Commit Timeline Scrubber (Modification 10) */}
       <div className="timeline-slider-wrapper">
         <div className="timeline-info-row">
-          <span className="timeline-title">🔍 Attack Path / Commit Scrubber</span>
+          <span className="timeline-title">Attack Path / Commit Scrubber</span>
           <span className="timeline-details">
             {highlightedPathIndex !== null && attackPaths[highlightedPathIndex]
               ? `Path ${highlightedPathIndex + 1} of ${attackPaths.length} | Severity: ${attackPaths[highlightedPathIndex].classification || attackPaths[highlightedPathIndex].risk || "HIGH"}`
@@ -239,7 +230,7 @@ const MetricsBar = ({ onScan, attackPaths = [], highlightedPathIndex, onHighligh
           </span>
         </div>
       </div>
-      
+
     </div>
   );
 };

@@ -10,8 +10,8 @@ export default function UnifiedPanel({
     {
       role: "assistant",
       text: "I have access to your scan findings. Ask me anything — " +
-            "'show SQL injection paths', 'who introduced the file traversal?', " +
-            "'which fix has the biggest impact?'"
+        "'show SQL injection paths', 'who introduced the file traversal?', " +
+        "'which fix has the biggest impact?'"
     }
   ]);
   const [input, setInput] = useState("");
@@ -42,21 +42,21 @@ export default function UnifiedPanel({
     setNodeAnalysis(null);
 
     fetch(`${API_BASE}/api/query/explain-node`, {
-      method:  "POST",
+      method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        node_id:   selectedNode.id,
-        label:     selectedNode.label,
+        node_id: selectedNode.id,
+        label: selectedNode.label,
         node_type: selectedNode.type,
-        severity:  selectedNode.severity,
-        risk:      selectedNode.risk,
-        file:      selectedNode.file,
-        line:      selectedNode.line,
+        severity: selectedNode.severity,
+        risk: selectedNode.risk,
+        file: selectedNode.file,
+        line: selectedNode.line,
       }),
     })
       .then((r) => r.json())
       .then((d) => { if (!cancelled) setNodeAnalysis(d); })
-      .catch(() => {})
+      .catch(() => { })
       .finally(() => { if (!cancelled) setLoadingAnalysis(false); });
 
     return () => { cancelled = true; };
@@ -84,7 +84,7 @@ export default function UnifiedPanel({
       // Handle graph actions from AI
       if (data.action) {
         if (data.action.action === "highlight_path" &&
-            data.action.path_index !== undefined) {
+          data.action.path_index !== undefined) {
           onHighlightPath(data.action.path_index);
         }
         if (data.action.action === "select_node" && data.action.node_id) {
@@ -122,13 +122,13 @@ export default function UnifiedPanel({
           className={`panel-tab-btn ${activeTab === "node" ? "active" : ""}`}
           onClick={() => setActiveTab("node")}
         >
-          🔍 Inspect Node {selectedNode ? `· ${selectedNode.label?.slice(0, 10)}` : ""}
+          Inspect Node {selectedNode ? `· ${selectedNode.label?.slice(0, 10)}` : ""}
         </button>
         <button
           className={`panel-tab-btn ${activeTab === "chat" ? "active" : ""}`}
           onClick={() => setActiveTab("chat")}
         >
-          🤖 AI security Copilot
+          AI security Copilot
         </button>
       </div>
 
@@ -164,7 +164,7 @@ export default function UnifiedPanel({
               </div>
 
               {/* Metadata Details Table (Modification 14) */}
-              <div className="panel-section-title">🧬 Node Structural Metrics</div>
+              <div className="panel-section-title">Node Structural Metrics</div>
               <div className="details-grid">
                 <div className="details-row">
                   <span className="details-key">Component File</span>
@@ -199,7 +199,7 @@ export default function UnifiedPanel({
               {/* AST Code Snippet (Modification 14) */}
               {selectedNode.label && (
                 <>
-                  <div className="panel-section-title">📂 AST Context Symbol</div>
+                  <div className="panel-section-title">AST Context Symbol</div>
                   <div style={{
                     background: "rgba(6, 9, 19, 0.4)",
                     border: "1px solid var(--border)",
@@ -210,7 +210,7 @@ export default function UnifiedPanel({
                     color: "var(--accent-cyan)",
                     wordBreak: "break-all"
                   }}>
-                    {selectedNode.type === "sink" ? `👉 Sink call: ${selectedNode.label}` : `📥 Input source: ${selectedNode.label}`}
+                    {selectedNode.type === "sink" ? `Sink call: ${selectedNode.label}` : `Input source: ${selectedNode.label}`}
                   </div>
                 </>
               )}
@@ -218,7 +218,7 @@ export default function UnifiedPanel({
               {/* AI Explanation & Analysis Panel (Modification 15) */}
               {["sink", "source"].includes(selectedNode.type) && (
                 <>
-                  <div className="panel-section-title">🔬 AI Vulnerability Analysis</div>
+                  <div className="panel-section-title">AI Vulnerability Analysis</div>
                   {loadingAnalysis ? (
                     <div style={{ color: "var(--text-muted)", fontSize: "12px", fontStyle: "italic" }}>
                       Querying local LLM agent...
@@ -234,12 +234,12 @@ export default function UnifiedPanel({
 
                         {/* Modification 15 explanation points */}
                         <div className="ai-block">
-                          <span className="ai-label">🚨 Root Cause Explanation</span>
+                          <span className="ai-label">Root Cause Explanation</span>
                           <p className="ai-text">{nodeAnalysis.root_cause}</p>
                         </div>
 
                         <div className="ai-block">
-                          <span className="ai-label">⚠️ Impact Radius</span>
+                          <span className="ai-label">Impact Radius</span>
                           <p className="ai-text">{nodeAnalysis.what_it_does}</p>
                         </div>
 
@@ -275,7 +275,7 @@ export default function UnifiedPanel({
               {/* Attack Vector List through Node */}
               {nodeContext?.attack_paths_through?.length > 0 && (
                 <>
-                  <div className="panel-section-title">🚨 Active Attack Vectors ({nodeContext.attack_paths_through.length})</div>
+                  <div className="panel-section-title">Active Attack Vectors ({nodeContext.attack_paths_through.length})</div>
                   <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "6px" }}>
                     Select a path vector to animate data flows on 3D view.
                   </div>
@@ -311,7 +311,7 @@ export default function UnifiedPanel({
               {/* Patch Impact Preview */}
               {nodeContext?.patch_impact && (
                 <>
-                  <div className="panel-section-title">🛡️ Patch Simulation Impact</div>
+                  <div className="panel-section-title">Patch Simulation Impact</div>
                   <div style={{
                     background: "rgba(16, 185, 129, 0.05)",
                     border: "1px solid rgba(16, 185, 129, 0.3)",
@@ -337,7 +337,7 @@ export default function UnifiedPanel({
               {/* Git Blame / Commit attribution (Modification 14) */}
               {selectedNode.git_blame?.commit && (
                 <>
-                  <div className="panel-section-title">📅 Version Control Origin</div>
+                  <div className="panel-section-title">Version Control Origin</div>
                   <div className="commit-card">
                     <div className="commit-card-row">
                       <span className="commit-card-key">Author</span>
@@ -355,11 +355,11 @@ export default function UnifiedPanel({
                       <span className="commit-card-key">Summary</span>
                       <span className="commit-card-val commit-card-message">"{selectedNode.git_blame.message}"</span>
                     </div>
-                    
+
                     {/* Blast radius info */}
                     {selectedNode.blast_radius?.length > 0 && (
                       <div style={{ marginTop: "6px", borderTop: "1px dashed var(--border)", paddingTop: "8px" }}>
-                        <span className="ai-label">💥 Blast Radius ({selectedNode.blast_radius.length} files)</span>
+                        <span className="ai-label"> Blast Radius ({selectedNode.blast_radius.length} files)</span>
                         <div style={{ display: "flex", flexDirection: "column", gap: "2px", marginTop: "4px" }}>
                           {selectedNode.blast_radius.slice(0, 3).map((f, idx) => (
                             <span key={idx} style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "10.5px", color: "var(--text-muted)" }}>
@@ -385,7 +385,7 @@ export default function UnifiedPanel({
                 </button>
               ) : (
                 <div className="action-patch-success">
-                  🛡️ Symbol patched & path traces severed
+                  Symbol patched & path traces severed
                 </div>
               )}
             </>
@@ -404,7 +404,7 @@ export default function UnifiedPanel({
                 {msg.sources?.length > 0 && (
                   <div className="chat-sources-container">
                     {msg.sources.map((s, idx) => (
-                      <span key={idx} className="chat-source-badge">📖 {s}</span>
+                      <span key={idx} className="chat-source-badge">{s}</span>
                     ))}
                   </div>
                 )}

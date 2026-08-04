@@ -4,6 +4,7 @@ import SpriteText from "three-spritetext";
 import * as THREE from "three";
 import { forceY } from "d3-force-3d";
 import useStore from "../store/useStore";
+import { NODE_STYLE_LOOKUP, getBaseNodeStyle, getNodeSize } from "../store/nodeStyles";
 
 const RISK_COLORS = {
   critical: "#EF4444",
@@ -12,15 +13,17 @@ const RISK_COLORS = {
   low: "#10B981"
 };
 
-// ─── Shape-Based Geometries per Node Type (Modification 2) ───
-const GEOMETRIES = {
-  source: (radius) => new THREE.SphereGeometry(radius, 20, 20),
-  sink: (radius) => new THREE.IcosahedronGeometry(radius, 0), // Icosahedron (Dangerous Octahedron-like)
-  sanitizer: (radius) => new THREE.CylinderGeometry(radius, radius, radius * 1.5, 6), // Hexagon cylinder
-  function: (radius) => new THREE.BoxGeometry(radius * 1.6, radius * 1.6, radius * 1.6), // Cube
-  intermediate: (radius) => new THREE.OctahedronGeometry(radius, 0), // Diamond
-  normal: (radius) => new THREE.SphereGeometry(radius, 16, 16)
+// Global clock for shader animations (so we don't need a central render loop in ForceGraph)
+const globalUniforms = {
+  uTime: { value: 0 }
 };
+const animateShaders = () => {
+  globalUniforms.uTime.value = performance.now() * 0.002;
+  requestAnimationFrame(animateShaders);
+};
+animateShaders();
+
+// Geometries are now driven by ../store/nodeStyles.js
 
 const getNodeColor = (node, diffMode) => {
   if (node.patched) return '#4B5563'; // Neutral grey
@@ -39,69 +42,23 @@ const getNodeColor = (node, diffMode) => {
   }
 
   const nodeType = String(node.type || '').toLowerCase();
-  const typeColors = {
-    source: '#10B981',      // Emerald Green
-    sink: '#EF4444',        // Bright Red
-    intermediate: '#F59E0B',// Amber
-    sanitizer: '#8B5CF6',   // Electric Violet (Guard node)
-    function: '#3B82F6',    // Blue
-    normal: '#9CA3AF',      // Slate grey
-  };
-
   if (node.community && node.community !== "application_logic" && node.community_color) {
     return node.community_color;
   }
 
-  return typeColors[nodeType] || '#6B7280';
-};
-
-// Meaningful Node Sizes (Modification 1)
-const getNodeSize = (node) => {
-  const nodeType = String(node.type || '').toLowerCase();
-  
-  // Base size hierarchy: Sink > Guard (Sanitizer) > Entry (Source) > Intermediate > Normal
-  let base = 4;
-  if (nodeType === 'sink') base = 9;
-  else if (nodeType === 'sanitizer') base = 7;
-  else if (nodeType === 'source') base = 6;
-  else if (nodeType === 'function') base = 5;
-  else if (nodeType === 'intermediate') base = 4.5;
-  else base = 3.5;
-
-  // Multiplier based on risk score / level
-  const riskMultiplier = {
-    CRITICAL: 1.8,
-    HIGH: 1.5,
-    MEDIUM: 1.25,
-    LOW: 1.0,
-    critical: 1.8,
-    high: 1.5,
-    medium: 1.25,
-    low: 1.0
-  };
-  const risk = node.risk || 'LOW';
-  
-  // Size increase for patched/modified nodes
-  const modificationBonus = node.patched ? 1.2 : 1.0;
-
-  return base * (riskMultiplier[risk] || 1.0) * modificationBonus;
+  const style = getBaseNodeStyle(nodeType);
+  return style.color || '#6B7280';
 };
 
 // Reachability visualization edge colors (Modification 4)
-const getEdgeColor = (link, isOnPath, activeLayer) => {
-  if (link.patched) return 'rgba(75, 85, 99, 0.15)'; // Inactive patched edge
+const getEdgeColor = (link, isOnPath, hasSelection) => {
+  if (link.patched || link.type === "sanitized") return '#10B981'; // Protected (green/static)
+  if (isOnPath) return '#EF4444'; // Unsafe (red/animated)
+  if (link.on_attack_path) return '#60A5FA'; // Reachable (bright/static)
+  if (hasSelection && !isOnPath) return 'rgba(75, 85, 99, 0.1)'; // Inactive (grey/very low opacity)
   
-  // If we are visualizing reachability layer
-  if (isOnPath || link.on_attack_path) {
-    return 'rgba(239, 68, 68, 0.85)'; // Intense red for active vulnerable paths
-  }
-  
-  if (activeLayer === "reachability") {
-    return 'rgba(59, 130, 246, 0.25)'; // Highlight normal reachable connections in cool blue
-  }
-
-  // Normal edges: thin and low opacity
-  return 'rgba(107, 114, 128, 0.2)';
+  // Normal (thin/low-opacity)
+  return 'rgba(107, 114, 128, 0.3)';
 };
 
 // Custom Three.js object builder per node
@@ -124,8 +81,8 @@ function buildNodeObject(node, isOnPath, hoveredNodeId, diffMode, blastNodeId) {
   }
 
   const color = getNodeColor(node, diffMode);
-  const geomFn = GEOMETRIES[nodeType] || GEOMETRIES.normal;
-  const geometry = geomFn(radius);
+  const style = getBaseNodeStyle(nodeType);
+  const geometry = style.geometry(radius);
   
   // Custom futuristic materials
   const material = new THREE.MeshPhongMaterial({
@@ -140,38 +97,101 @@ function buildNodeObject(node, isOnPath, hoveredNodeId, diffMode, blastNodeId) {
   const mesh = new THREE.Mesh(geometry, material);
   group.add(mesh);
 
-  // ─── Guard Node Barriers (Modification 13) ───
-  if (nodeType === "sanitizer") {
-    // Faint green/cyan shielding halo for guards
-    const shieldGeo = new THREE.CylinderGeometry(radius * 1.5, radius * 1.5, radius * 0.2, 8, 1, true);
-    const shieldMat = new THREE.MeshBasicMaterial({
-      color: node.patched ? "#EF4444" : "#10B981", // Red if guard failed/dissolved, Green if guard safe
+  // Star-glow overlay for modified nodes
+  if (node.modified) {
+    const glowGeo = new THREE.OctahedronGeometry(radius * 1.6, 1);
+    const glowMat = new THREE.MeshBasicMaterial({
+      color: '#FCD34D',
       transparent: true,
-      opacity: node.patched ? 0.15 : 0.35,
+      opacity: 0.4,
       wireframe: true,
-      side: THREE.DoubleSide
+      blending: THREE.AdditiveBlending
     });
-    const shieldMesh = new THREE.Mesh(shieldGeo, shieldMat);
-    shieldMesh.rotation.x = Math.PI / 2;
-    group.add(shieldMesh);
+    const glowMesh = new THREE.Mesh(glowGeo, glowMat);
+    group.add(glowMesh);
   }
 
-  // ─── Concentric Risk Rings / Halos (Modification 6) ───
+  // Pulsing animation for Sinks (static representation via scaling rings)
+  if (nodeType === 'sink') {
+    const pulseTime = Date.now() * 0.002;
+    const pulseScale = 1 + Math.sin(pulseTime) * 0.15;
+    mesh.scale.set(pulseScale, pulseScale, pulseScale);
+  }
+
+  // ─── Guard Node Barriers (Modification 13) ───
+  if (nodeType === "sanitizer") {
+    // Guards render as a visible barrier plane.
+    // The active/removed state lives in the `node.patched` flag from useStore.
+    // If a guard is patched (fixed), the barrier is active and present.
+    const isBarrierActive = node.patched;
+    
+    if (isBarrierActive) {
+      const planeGeo = new THREE.PlaneGeometry(radius * 5, radius * 5);
+      
+      // Base plane
+      const planeMat = new THREE.MeshBasicMaterial({
+        color: "#10B981", // Green for active shield
+        transparent: true,
+        opacity: 0.25,
+        side: THREE.DoubleSide,
+        depthWrite: false
+      });
+      const planeMesh = new THREE.Mesh(planeGeo, planeMat);
+      planeMesh.rotation.x = Math.PI / 2;
+      group.add(planeMesh);
+      
+      // Tech wireframe overlay
+      const wireMat = new THREE.MeshBasicMaterial({
+        color: "#10B981",
+        wireframe: true,
+        transparent: true,
+        opacity: 0.6,
+        side: THREE.DoubleSide
+      });
+      const wireMesh = new THREE.Mesh(planeGeo, wireMat);
+      wireMesh.rotation.x = Math.PI / 2;
+      group.add(wireMesh);
+    }
+  }
+
+  // ─── Heatmap Glow & Risk Rings (Modification 6) ───
   if (!node.patched && (nodeType === "sink" || node.risk)) {
-    const risk = String(node.risk || '').toUpperCase();
+    const risk = String(node.risk || 'LOW').toUpperCase();
     let ringCount = 1;
     if (risk === "MEDIUM") ringCount = 2;
     else if (risk === "HIGH") ringCount = 3;
     else if (risk === "CRITICAL") ringCount = 4;
 
+    // 1. Concentric pulsing halos (Rings)
     for (let r = 1; r <= ringCount; r++) {
-      const ringGeo = new THREE.RingGeometry(radius + (r * 1.8), radius + (r * 1.8) + 0.3, 16);
-      const ringMat = new THREE.MeshBasicMaterial({
-        color: RISK_COLORS[risk.toLowerCase()] || color,
-        side: THREE.DoubleSide,
+      const ringGeo = new THREE.RingGeometry(radius + (r * 1.8), radius + (r * 1.8) + 0.3, 32);
+      const ringMat = new THREE.ShaderMaterial({
+        uniforms: {
+          uColor: { value: new THREE.Color(RISK_COLORS[risk.toLowerCase()] || color) },
+          uTime: globalUniforms.uTime,
+          uOpacity: { value: 0.25 - (r * 0.05) },
+          uOffset: { value: r * 0.5 }
+        },
+        vertexShader: `
+          uniform float uTime;
+          uniform float uOffset;
+          void main() {
+            // Subtle pulse animation based on time, offset per ring
+            float pulse = 1.0 + sin(uTime + uOffset) * 0.04;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position * pulse, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform vec3 uColor;
+          uniform float uOpacity;
+          void main() {
+            gl_FragColor = vec4(uColor, uOpacity);
+          }
+        `,
         transparent: true,
-        opacity: 0.25 - (r * 0.05), // Fades out
-        blending: THREE.AdditiveBlending
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+        depthWrite: false
       });
       const ringMesh = new THREE.Mesh(ringGeo, ringMat);
       
@@ -179,6 +199,44 @@ function buildNodeObject(node, isOnPath, hoveredNodeId, diffMode, blastNodeId) {
       ringMesh.lookAt(new THREE.Vector3(0, 0, 1));
       group.add(ringMesh);
     }
+
+    // 2. Heatmap Glow (Additive-blended Sprite)
+    let glowColor = '#3B82F6'; // cool blue (safe/low)
+    if (risk === 'CRITICAL') glowColor = '#991B1B'; // deep crimson
+    else if (risk === 'HIGH') glowColor = '#EF4444'; // warm red
+    else if (risk === 'MEDIUM') glowColor = '#F59E0B'; // warm orange
+
+    const glowMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uColor: { value: new THREE.Color(glowColor) }
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 uColor;
+        varying vec2 vUv;
+        void main() {
+          // Calculate distance from center (0.5, 0.5)
+          float d = distance(vUv, vec2(0.5));
+          // Soft exponential falloff for the glow
+          float alpha = smoothstep(0.5, 0.0, d);
+          alpha = pow(alpha, 1.5);
+          gl_FragColor = vec4(uColor, alpha * 0.55);
+        }
+      `,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+    const glowSprite = new THREE.Sprite(glowMat);
+    // Scale sprite to encompass the node and rings
+    glowSprite.scale.set(radius * 6, radius * 6, 1);
+    group.add(glowSprite);
   }
 
   // Floating label in mono font
@@ -244,16 +302,16 @@ const GraphCanvas = ({ onNodeClick }) => {
     
     fg.d3Force('y', forceY().y((node) => {
       const type = String(node.type || '').toLowerCase();
-      // Level 1: external inputs -> Level 2: functions -> Level 3: sanitizers -> Level 4: sinks
-      if (type === 'source') return -120; // Top
-      if (type === 'function') return -30;
-      if (type === 'sanitizer') return 30;
-      if (type === 'sink') return 120; // Bottom
+      // Four vertical bands: External Inputs -> Business Logic -> Validation -> Sensitive Operations
+      if (type === 'source') return -150; // External Inputs
+      if (type === 'function') return -50; // Business Logic
+      if (type === 'sanitizer') return 50; // Validation
+      if (type === 'sink') return 150; // Sensitive Operations
       return 0;
-    }).strength(0.08));
+    }).strength(0.3)); // Stronger strength to enforce bands
     
     // Adjust charge force strength
-    fg.d3Force('charge').strength(-150);
+    fg.d3Force('charge').strength(-200);
   }, [graph]);
 
   // Zoom to fit on load
@@ -360,14 +418,18 @@ const GraphCanvas = ({ onNodeClick }) => {
         linkWidth={(link) => {
           const s = link.source?.id || link.source;
           const t = link.target?.id || link.target;
-          return pathEdgeSet.has(`${s}->${t}`) ? 3.5 : 0.8;
+          const isOnPath = pathEdgeSet.has(`${s}->${t}`);
+          
+          if (isOnPath) return 3.5;
+          if (link.on_attack_path || link.patched || link.type === "sanitized") return 1.5;
+          return 0.8;
         }}
         linkColor={(link) => {
           const s = link.source?.id || link.source;
           const t = link.target?.id || link.target;
-          return getEdgeColor(link, pathEdgeSet.has(`${s}->${t}`), activeLayer);
+          return getEdgeColor(link, pathEdgeSet.has(`${s}->${t}`), path.length > 0);
         }}
-        linkOpacity={0.8}
+        linkOpacity={1}
 
         // ── Directional Flow Particles (Modification 5) ──
         linkDirectionalParticles={(link) => {
@@ -375,61 +437,45 @@ const GraphCanvas = ({ onNodeClick }) => {
           const t = link.target?.id || link.target;
           const isOnPath = pathEdgeSet.has(`${s}->${t}`);
           
-          if (isOnPath) return 6; // Active particle flow on attack path
-          if (activeLayer === "reachability" && link.on_attack_path) return 2; // Normal flow
-          return 0;
+          // Animate particles for all active connections
+          return 4; 
         }}
-        linkDirectionalParticleWidth={2.8}
+        linkDirectionalParticleWidth={2.5}
         linkDirectionalParticleColor={(link) => {
-          // Different particle colors: Blue (Normal), Green (Sanitized/Safe), Yellow (Blocked), Red (Malicious)
           const s = link.source?.id || link.source;
           const t = link.target?.id || link.target;
           const isOnPath = pathEdgeSet.has(`${s}->${t}`);
           
-          if (isOnPath) {
-            return "#EF4444"; // Malicious (Red)
-          }
-          if (link.type === "sanitized" || link.patched) {
-            return "#10B981"; // Validated/Blocked (Green/Yellow)
-          }
-          return "#60A5FA"; // Normal Data (Blue)
+          // Particle color by data state: 
+          if (isOnPath) return "#EF4444"; // Malicious (red)
+          if (link.type === "sanitized") return "#10B981"; // Validated (green)
+          if (link.patched) return "#FBBF24"; // Blocked (yellow)
+          return "#3B82F6"; // Normal (blue)
         }}
         linkDirectionalParticleSpeed={(link) => {
-          const s = link.source?.id || link.source;
-          const t = link.target?.id || link.target;
-          const isOnPath = pathEdgeSet.has(`${s}->${t}`);
-          
-          // Malicious flow moves faster indicating execution intensity
-          return isOnPath ? 0.015 : 0.005;
+          // Note: Speed must be derived from an existing intensity field. 
+          // After inspecting the current data model, there is no such intensity field on paths/edges.
+          // Using a fixed speed fallback instead of inventing one.
+          return 0.015;
         }}
         linkDirectionalArrowLength={4}
         linkDirectionalArrowRelPos={1}
-
+        
         // ── Scene ──
         backgroundColor="#060913"
         showNavInfo={false}
-        cooldownTicks={150}
+        // Removed cooldownTicks so simulation stays live (does not become a static grid)
       />
 
       {/* Modern Sci-Fi Legend overlay */}
       <div className="graph-legend">
         <div className="legend-title">Graph Taxonomy</div>
-        <div className="legend-item">
-          <div className="legend-dot" style={{ background: '#10B981' }} />
-          <span>Entry / Source (Input)</span>
-        </div>
-        <div className="legend-item">
-          <div className="legend-dot" style={{ background: '#EF4444' }} />
-          <span>Sensitive Sink (Op)</span>
-        </div>
-        <div className="legend-item">
-          <div className="legend-dot" style={{ background: '#8B5CF6' }} />
-          <span>Security Guard (Filter)</span>
-        </div>
-        <div className="legend-item">
-          <div className="legend-dot" style={{ background: '#3B82F6' }} />
-          <span>Application Logic</span>
-        </div>
+        {Object.values(NODE_STYLE_LOOKUP).filter(s => s.label !== 'Normal Node').map((style, idx) => (
+          <div className="legend-item" key={idx}>
+            <div className="legend-dot" style={{ background: style.color }} />
+            <span>{style.label}</span>
+          </div>
+        ))}
         <div className="legend-item">
           <div className="legend-dot" style={{ background: '#4B5563' }} />
           <span>Patched Code</span>
