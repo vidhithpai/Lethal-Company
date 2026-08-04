@@ -320,26 +320,41 @@ def _classify_risk(score: float) -> str:
     return "LOW"
 
 
-def _node_id(path: Path, lineno: int, col: int, kind: str, name: str) -> str:
-    return f"{str(path)}:{lineno}:{col}:{kind}:{name}"
+def _normalize_rel_path(path: Path | str, root: Path | str | None = None) -> str:
+    p = Path(path)
+    if root:
+        try:
+            p = p.relative_to(Path(root))
+        except ValueError:
+            pass
+    return str(p).replace("\\", "/")
 
 
-def _var_id(path: Path, name: str) -> str:
-    return f"{str(path)}:var:{name}"
+def _node_id(path: Path, lineno: int, col: int, kind: str, name: str, root_dir: Path | None = None) -> str:
+    rel = _normalize_rel_path(path, root_dir)
+    return f"{rel}::{kind}:{name}"
+
+
+def _var_id(path: Path, name: str, root_dir: Path | None = None) -> str:
+    rel = _normalize_rel_path(path, root_dir)
+    return f"{rel}::var:{name}"
 
 
 class _TaintVisitor(ast.NodeVisitor):
-    def __init__(self, file_path: Path, g: nx.DiGraph) -> None:
+    def __init__(self, file_path: Path, g: nx.DiGraph, root_dir: Path | None = None) -> None:
         self.file_path = file_path
+        self.root_dir = root_dir
+        self.rel_path = _normalize_rel_path(file_path, root_dir)
         self.g = g
         self.tainted: set[str] = set()
         self.sources: set[str] = set()
         self.sinks: set[str] = set()
         self.sanitizers: set[str] = set()
         self.current_function: str | None = None
+        self._node_counts: dict[str, int] = {}
 
     def _function_id(self, name: str) -> str:
-        return f"{str(self.file_path)}:func:{name}"
+        return f"{self.rel_path}::{name}"
 
     def _ensure_function_node(self, name: str, *, lineno: int, col: int) -> str:
         nid = self._function_id(name)
@@ -367,8 +382,13 @@ class _TaintVisitor(ast.NodeVisitor):
         lineno = getattr(expr, "lineno", 1)
         col = getattr(expr, "col_offset", 0)
         label = _qualname(expr) or fallback_label
-        nid = _node_id(self.file_path, lineno, col, ntype, label)
         
+        scope = self.current_function
+        base_id = f"{self.rel_path}::{scope}::{ntype}:{label}" if scope else f"{self.rel_path}::{ntype}:{label}"
+        count = self._node_counts.get(base_id, 0)
+        self._node_counts[base_id] = count + 1
+        nid = f"{base_id}[{count}]" if count > 0 else base_id
+
         kind = ""
         if ntype == "source":
             lbl = label.lower()
@@ -397,7 +417,8 @@ class _TaintVisitor(ast.NodeVisitor):
         return nid
 
     def _var_to_node(self, name: str, *, lineno: int, col: int) -> str:
-        nid = _var_id(self.file_path, name)
+        scope = self.current_function
+        nid = f"{self.rel_path}::{scope}::var:{name}" if scope else f"{self.rel_path}::var:{name}"
         self._add_node(nid, ntype="intermediate", label=name, lineno=lineno, col=col)
         return nid
 
@@ -550,11 +571,12 @@ def build_security_graph(config: SecurityGraphConfig) -> dict[str, Any]:
         except Exception:
             continue
 
-        vis = _TaintVisitor(py_file, g)
+        vis = _TaintVisitor(py_file, g, root_dir=config.root_dir)
         vis.visit(tree)
         sources.extend(list(vis.sources))
         sinks.extend(list(vis.sinks))
         sanitizers.extend(list(vis.sanitizers))
+
 
     for nid, is_patched in list(PATCHED_SECURITY_NODES.items()):
         if is_patched and nid in g:
@@ -595,6 +617,13 @@ def build_security_graph(config: SecurityGraphConfig) -> dict[str, Any]:
         })
 
     return {"graph": g, "nodes": nodes, "edges": edges, "sources": sources, "sinks": sinks, "sanitizers": sanitizers}
+
+
+def build_graph_for_path(project_path: str | Path) -> nx.DiGraph:
+    p = Path(project_path).resolve()
+    cfg = SecurityGraphConfig(root_dir=p)
+    res = build_security_graph(cfg)
+    return res["graph"]
 
 
 def get_security_graph(root: Path | None = None) -> dict[str, Any]:

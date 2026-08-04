@@ -7,7 +7,7 @@ services:
       dockerfile: docker/Dockerfile.backend
     container_name: vulngraph-backend
     ports:
-      - "8001:8001"          # browser calls http://localhost:8001
+      - "8002:8002"          # browser calls http://localhost:8002
     env_file:
       - .env                 # loads GEMINI_API_KEY (never baked into the image)
     environment:
@@ -19,7 +19,7 @@ services:
       # Optional: mount an external project to scan — uncomment and change path
       # - /path/to/your/project:/app/target_project:ro
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/')"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/')"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -33,8 +33,8 @@ services:
       dockerfile: docker/Dockerfile.frontend
       args:
         # The browser (running on the HOST machine) calls this URL.
-        # localhost:8001 works because Docker exposes that port to the host.
-        VITE_API_URL: http://localhost:8001
+        # localhost:8002 works because Docker exposes that port to the host.
+        VITE_API_URL: http://localhost:8002
     container_name: vulngraph-frontend
     ports:
       - "5173:80"            # open http://localhost:5173 in your browser
