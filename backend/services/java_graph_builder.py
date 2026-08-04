@@ -26,8 +26,19 @@ RISK_SCORES = {
 }
 
 
-def _node_id(filepath: str, line: int, node_type: str, name: str) -> str:
-    return f"{filepath}:{line}:0:{node_type}:{name}"
+def _rel_path_str(filepath: str, root: Path | str | None = None) -> str:
+    p = Path(filepath)
+    if root:
+        try:
+            p = p.relative_to(Path(root))
+        except ValueError:
+            pass
+    return str(p).replace("\\", "/")
+
+
+def _node_id(filepath: str, line: int, node_type: str, name: str, root: Path | str | None = None) -> str:
+    rel = _rel_path_str(filepath, root)
+    return f"{rel}::{name}"
 
 
 def _read_file_methods(filepath: str) -> dict[str, str]:
@@ -84,7 +95,7 @@ def build_java_graph(project_path: str) -> nx.DiGraph:
                 for item in items:
                     name = item["name"]
                     line = int(item["line"])
-                    nid = _node_id(filepath, line, node_type, name)
+                    nid = _node_id(filepath, line, node_type, name, root=root)
                     if nid in g:
                         continue
                     g.add_node(

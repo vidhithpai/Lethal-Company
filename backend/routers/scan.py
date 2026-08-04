@@ -42,12 +42,8 @@ def scan(req: ScanRequest):
         raise HTTPException(status_code=400, detail="project_path is required")
 
     p = Path(project_path).expanduser().resolve()
-    cwd = Path(os.getcwd()).resolve()
-    try:
-        p.relative_to(cwd.parent)
-    except ValueError:
-        if not p.exists():
-            raise HTTPException(status_code=400, detail="Path must be an existing directory within the workspace or parent directory")
+    if p.is_file():
+        p = p.parent
 
     if not p.exists() or not p.is_dir():
         raise HTTPException(

@@ -1,4 +1,4 @@
-export const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8001";
+export const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8002";
 
 export const endpoints = {
   graph: `${API_BASE}/api/graph`,
@@ -15,6 +15,11 @@ export const endpoints = {
   gitBlame: (projectPath) => `${API_BASE}/api/git/blame?project_path=${encodeURIComponent(projectPath)}`,
   gitTimeline: (projectPath, filepath) =>
     `${API_BASE}/api/git/timeline?project_path=${encodeURIComponent(projectPath)}&filepath=${encodeURIComponent(filepath)}`,
+  tdraAnalyze: `${API_BASE}/api/tdra/analyze`,
+  tdraRiskSummary: (repoPath, limit = 20) => `${API_BASE}/api/tdra/risk-summary?repo_path=${encodeURIComponent(repoPath)}&limit=${limit}`,
+  tdraCommit: (commitHash, repoPath) => `${API_BASE}/api/tdra/commit/${encodeURIComponent(commitHash)}?repo_path=${encodeURIComponent(repoPath)}`,
+  tdraPathContributions: (commitHash, repoPath) => `${API_BASE}/api/tdra/commit/${encodeURIComponent(commitHash)}/path-contributions?repo_path=${encodeURIComponent(repoPath)}`,
+  tdraTimeline: (repoPath, limit = 50) => `${API_BASE}/api/tdra/timeline?repo_path=${encodeURIComponent(repoPath)}&limit=${limit}`,
 };
 
 export const normalizeGraph = (payload) => ({
