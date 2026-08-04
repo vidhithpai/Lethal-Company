@@ -128,46 +128,62 @@ demo_project/
 ## Project Structure
 
 ```
-Lethal-Company/               ← project root (yes, the folder name is Lethal-Company)
+Lethal-Company/               ← monorepo root
 │
-├── main.py                   ← FastAPI app entry point — wires all routers together
-├── requirements.txt          ← Python dependencies
-├── .env                      ← GEMINI_API_KEY lives here
+├── frontend/                 ← React frontend application
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── canvas/       ← 3D force graph renderer (GraphCanvas.jsx)
+│   │   │   ├── metrics/      ← Security metrics bar (MetricsBar.jsx)
+│   │   │   └── panel/        ← Unified side panel (UnifiedPanel.jsx)
+│   │   ├── services/         ← API endpoint configuration (api.js)
+│   │   ├── store/            ← Zustand global state (useStore.js)
+│   │   ├── styles/           ← Global dark theme CSS (styles.css)
+│   │   ├── App.jsx           ← Main App layout
+│   │   └── main.jsx          ← React entry point
+│   ├── public/
+│   ├── index.html
+│   ├── package.json
+│   ├── package-lock.json
+│   ├── vite.config.js
+│   └── .env
 │
-├── backend/
+├── backend/                  ← FastAPI backend application
+│   ├── main.py               ← FastAPI app entry point — wires all routers together
+│   ├── requirements.txt      ← Python dependencies
+│   ├── .env                  ← GEMINI_API_KEY / GROQ_API_KEY configuration
+│   ├── data/                 ← Default graph data topology (seed_graph.json)
 │   ├── services/
-│   │   ├── code_security_graph.py  ← ⭐ THE BRAIN: AST scanner + taint engine + graph builder
-│   │   └── git_history.py          ← git blame, commit attribution, blast radius
-│   │
+│   │   ├── code_security_graph.py  ← AST scanner + taint engine + graph builder
+│   │   ├── git_history.py          ← git blame, commit attribution, blast radius
+│   │   ├── java_graph_builder.py   ← Java AST graph builder
+│   │   └── rag_engine.py           ← RAG retrieval engine
 │   └── routers/
 │       ├── security.py      ← /api/graph, /api/attack-paths, /api/high-risk-paths
-│       ├── scan.py          ← /api/cve/scan (triggers the AST analysis)
+│       ├── scan.py          ← /api/cve/scan (triggers AST analysis)
 │       ├── query.py         ← /api/query/ask (Groq AI integration & Offline Fallback)
 │       ├── report.py        ← /api/report/html (AI-Generated Executive NL Reports)
-│       └── git_router.py    ← /api/git/blame, /api/git/timeline
+│       ├── git_router.py    ← /api/git/blame, /api/git/timeline
+│       └── graph.py        ← /api/graph path endpoints
 │
-├── src/                      ← React frontend
-│   ├── main.jsx              ← React entry point
-│   ├── App.jsx               ← Root component, loads graph on startup
-│   ├── api.js                ← All API endpoint URLs in one place
-│   ├── styles.css            ← Global dark theme CSS
-│   │
-│   ├── components/
-│   │   ├── GraphCanvas.jsx   ← 3D force graph renderer (Three.js)
-│   │   ├── SidePanel.jsx     ← Selected node details, git blame, attack path edges
-│   │   ├── QueryBar.jsx      ← Search bar + scan controls
-│   │   └── EntryPage.jsx     ← Landing page
-│   │
-│   └── store/
-│       └── useStore.js       ← Zustand global state (graph, path, selectedNode)
+├── docker/                   ← Self-contained Docker configurations
+│   ├── Dockerfile.backend
+│   ├── Dockerfile.frontend
+│   └── nginx.conf
+│
+├── tools/                    ← Utility and standalone analysis scripts
+│   ├── vuln_analyzer.py
+│   ├── debug_mapping.py
+│   └── README.md
+│
+├── docs/                     ← Documentation and architecture specs
+│   ├── architecture.md
+│   └── PROJECT_AUDIT.md
 │
 ├── demo_project/             ← Intentionally vulnerable Flask app for demo scanning
-│   ├── app.py
-│   ├── db.py
-│   └── utils.py
-│
-├── package.json              ← Node dependencies (React, Three.js, etc.)
-└── vite.config.js            ← Vite build configuration
+├── sample_project/           ← Vulnerable Java/Polyglot sample app
+├── docker-compose.yml        ← Monorepo orchestration
+└── README.md
 ```
 
 ### The Two Most Important Files
@@ -180,7 +196,7 @@ Lethal-Company/               ← project root (yes, the folder name is Lethal-C
 - Builds a `networkx.DiGraph` where nodes = code elements, edges = data flow
 - Computes risk scores and HIGH/MEDIUM/LOW classifications
 
-**`src/components/GraphCanvas.jsx`** — The 3D visualization:
+**`frontend/src/components/canvas/GraphCanvas.jsx`** — The 3D visualization:
 - Renders the graph using Three.js force simulation
 - Green spheres = sources, Red = sinks, Yellow = tainted intermediates, Purple = sanitizers
 - Attack paths glow red with animated particles when highlighted

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import useStore from "../store/useStore";
-import { API_BASE } from "../api";
+import useStore from "../../store/useStore";
+import { API_BASE } from "../../services/api";
 
 const MetricsBar = ({ onScan }) => {
   const graph = useStore((state) => state.graph);

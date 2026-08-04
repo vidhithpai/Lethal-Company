@@ -1,8 +1,8 @@
 import { useEffect, useState, useRef } from "react";
-import GraphCanvas from "./components/GraphCanvas";
-import MetricsBar from "./components/MetricsBar";
-import UnifiedPanel from "./components/UnifiedPanel";
-import { endpoints, normalizeGraph } from "./api";
+import GraphCanvas from "./components/canvas/GraphCanvas";
+import MetricsBar from "./components/metrics/MetricsBar";
+import UnifiedPanel from "./components/panel/UnifiedPanel";
+import { endpoints, normalizeGraph } from "./services/api";
 import useStore from "./store/useStore";
 
 const App = () => {

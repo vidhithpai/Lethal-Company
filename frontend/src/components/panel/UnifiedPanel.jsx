@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
-import useStore from "../store/useStore";
-import { API_BASE } from "../api";
+import useStore from "../../store/useStore";
+import { API_BASE } from "../../services/api";
 
 export default function UnifiedPanel({
   selectedNode, attackPath, attackPaths, onPatch, onHighlightPath, onSelectNode
