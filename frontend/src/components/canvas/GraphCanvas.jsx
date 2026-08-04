@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D from "react-force-graph-3d";
 import SpriteText from "three-spritetext";
 import * as THREE from "three";
-import useStore from "../store/useStore";
+import useStore from "../../store/useStore";
 
 const RISK_COLORS = {
   critical: "#EF4444",
