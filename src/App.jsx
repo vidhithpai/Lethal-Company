@@ -137,7 +137,12 @@ const App = () => {
         style={{ display: "none" }} 
         onChange={handleFileUpload} 
       />
-      <MetricsBar onScan={handleScanNewProject} />
+      <MetricsBar
+        onScan={handleScanNewProject}
+        attackPaths={attackPaths}
+        highlightedPathIndex={highlightedPathIndex}
+        onHighlightPath={(idx) => setHighlightedPathIndex(idx)}
+      />
       <div className="main-layout" style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         <div className="graph-wrap" style={{ flex: 1 }}>
           <GraphCanvas onNodeClick={setSelectedNode} />
