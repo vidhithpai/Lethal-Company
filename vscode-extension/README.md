@@ -38,7 +38,12 @@ You can customize extension behavior in VS Code Settings (`Ctrl+,` or `Cmd+,` ->
 | Setting | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `vulngraph.backendUrl` | `string` | `http://localhost:8002` | URL of the local VulnGraph backend server |
+| `vulngraph.projectPath` | `string` | _(empty)_ | Path that the backend can access. Set this to `/app/demo_project` or `/app/sample_project` when using the supplied Docker setup. |
 | `vulngraph.analyzeOnSave` | `boolean` | `true` | Automatically re-analyze supported files on save (1500ms debounce) |
+
+### Testing with Docker
+
+The extension runs on the host, while the backend container sees only its mounted paths. To test the supplied Docker setup, open `demo_project` in VS Code and set `vulngraph.projectPath` to `/app/demo_project` in the workspace settings. For a different project, mount it into the backend container and set this value to the corresponding container path.
 
 ---
 

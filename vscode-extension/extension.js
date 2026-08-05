@@ -26,17 +26,22 @@ async function analyzeFile(document) {
 
   try {
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
-    const workspacePath = workspaceFolder ? workspaceFolder.uri.fsPath : (vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || document.uri.fsPath);
+    const localWorkspacePath = workspaceFolder ? workspaceFolder.uri.fsPath : (vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || document.uri.fsPath);
+    // A Dockerized backend cannot access host paths such as C:\\project. Allow a
+    // configured container-visible path while retaining the local default.
+    const configuredProjectPath = config.get('projectPath', '').trim();
+    const projectPath = configuredProjectPath || localWorkspacePath;
 
     // Trigger local scan endpoint (/api/cve/scan)
     const scanResponse = await fetch(`${backendUrl}/api/cve/scan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project_path: workspacePath })
+      body: JSON.stringify({ project_path: projectPath })
     });
 
     if (!scanResponse.ok) {
-      throw new Error(`Scan request failed with status ${scanResponse.status}`);
+      const errorText = await scanResponse.text();
+      throw new Error(`Scan request failed with status ${scanResponse.status}${errorText ? `: ${errorText}` : ''}`);
     }
 
     const data = await scanResponse.json();

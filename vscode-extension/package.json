@@ -35,6 +35,11 @@
           "default": "http://localhost:8002",
           "description": "VulnGraph backend URL (default: http://localhost:8002)"
         },
+        "vulngraph.projectPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path visible to the backend for scanning. Use a container path such as /app/demo_project when the backend runs in Docker; leave empty when it runs locally."
+        },
         "vulngraph.analyzeOnSave": {
           "type": "boolean",
           "default": true,
