@@ -2,8 +2,8 @@ import { useMemo } from "react";
 
 // ─── Palette ─────────────────────────────────────────────────────────────────
 const T = {
-  bg:         "#0B1D26",
-  dotGrid:    "#1C3D4B",
+  bg:         "#080c14",   // matches 3D view backgroundColor
+  dotGrid:    "#132030",   // dimmed to suit the darker base
   panel:      "#0F2530",
   border:     "#1C3D4B",
   borderSoft: "#16323E",
@@ -66,63 +66,93 @@ function edgeDash(link, isOnPath) {
 
 // ─── Layout ──────────────────────────────────────────────────────────────────
 /**
- * Returns { positions: { [id]: {x, y} }, canvasW, canvasH }
+ * Returns { positions, canvasW, canvasH, numCols }
  *
- * Columns (left → right):
- *   0 : source
- *   1 : function / intermediate  + high-degree normals
- *   2 : sanitizer + low-degree normals
- *   3 : sink + patched
+ * Uses BFS from source nodes to assign each node a "depth level".
+ * That depth becomes the column, spreading nodes across the full
+ * horizontal width of the canvas rather than stacking them all
+ * into 4 fixed type-based columns.
  *
- * Every position is in absolute pixels. The SVG gets these dimensions so
- * the canvas is as large as needed — the parent scrolls.
+ * Fallback for disconnected / unvisited nodes: type-based bucket.
  */
 function computeLayout(nodes, links) {
-  const COLS = 4;
-  const buckets = Array.from({ length: COLS }, () => []);
+  // Build forward adjacency and in-degree maps
+  const adj   = {};   // id → [targetId, ...]
+  const inDeg = {};   // id → number
 
   nodes.forEach((n) => {
-    const t = String(n.type || "").toLowerCase();
-    if (t === "source") {
-      buckets[0].push(n.id);
-    } else if (t === "sink") {
-      buckets[3].push(n.id);
-    } else if (t === "patched") {
-      buckets[3].push(n.id);
-    } else if (t === "sanitizer") {
-      buckets[2].push(n.id);
-    } else if (t === "function" || t === "intermediate") {
-      buckets[1].push(n.id);
-    } else {
-      // "normal" / unknown — distribute by degree
-      const degree = links.filter(
-        (l) =>
-          l.source === n.id || l.source?.id === n.id ||
-          l.target === n.id || l.target?.id === n.id
-      ).length;
-      buckets[degree > 2 ? 1 : 2].push(n.id);
+    adj[n.id]   = [];
+    inDeg[n.id] = 0;
+  });
+
+  links.forEach((l) => {
+    const src = l.source?.id ?? l.source;
+    const tgt = l.target?.id ?? l.target;
+    if (adj[src])              adj[src].push(tgt);
+    if (inDeg[tgt] !== undefined) inDeg[tgt]++;
+  });
+
+  // ── BFS from roots (nodes with 0 in-degree, or source-typed) ─────────────
+  const depth = {};
+  const queue = [];
+
+  // Prefer nodes the graph designates as source-type first
+  nodes
+    .filter((n) => String(n.type || "").toLowerCase() === "source")
+    .forEach((n) => { depth[n.id] = 0; queue.push(n.id); });
+
+  // Then any node with no incoming edges not already queued
+  nodes
+    .filter((n) => inDeg[n.id] === 0 && depth[n.id] === undefined)
+    .forEach((n) => { depth[n.id] = 0; queue.push(n.id); });
+
+  // Propagate depths (longest-path BFS so sinks end up furthest right)
+  let qi = 0;
+  while (qi < queue.length) {
+    const id = queue[qi++];
+    (adj[id] || []).forEach((tgtId) => {
+      const next = (depth[id] ?? 0) + 1;
+      if (depth[tgtId] === undefined || depth[tgtId] < next) {
+        depth[tgtId] = next;
+        queue.push(tgtId);   // re-queue for relaxation
+      }
+    });
+  }
+
+  // Fallback: any node not reached gets a level based on type
+  const TYPE_FALLBACK = { source: 0, sanitizer: 1, normal: 2, function: 2, intermediate: 2, sink: 3, patched: 3 };
+  nodes.forEach((n) => {
+    if (depth[n.id] === undefined) {
+      depth[n.id] = TYPE_FALLBACK[String(n.type || "").toLowerCase()] ?? 1;
     }
   });
 
-  const colX = Array.from({ length: COLS }, (_, i) => PAD_LEFT + i * COL_SPACING);
-  const positions = {};
-  let maxRows = 0;
+  // ── Build per-level buckets ───────────────────────────────────────────────
+  const maxDepth = Math.max(...Object.values(depth), 0);
+  const buckets  = Array.from({ length: maxDepth + 1 }, () => []);
+  nodes.forEach((n) => buckets[depth[n.id]].push(n.id));
 
-  buckets.forEach((ids, colIdx) => {
-    maxRows = Math.max(maxRows, ids.length);
+  // ── Assign pixel positions ────────────────────────────────────────────────
+  const positions    = {};
+  let maxNodesInCol  = 0;
+
+  buckets.forEach((ids, lvl) => {
+    maxNodesInCol = Math.max(maxNodesInCol, ids.length);
     ids.forEach((id, rowIdx) => {
       positions[id] = {
-        x: colX[colIdx],
+        x: PAD_LEFT + lvl * COL_SPACING,
         y: PAD_TOP + rowIdx * ROW_SPACING + ROW_SPACING / 2,
       };
     });
   });
 
-  const canvasW = PAD_LEFT + (COLS - 1) * COL_SPACING + NW / 2 + PAD_RIGHT;
-  const canvasH = Math.max(520, PAD_TOP + Math.max(maxRows, 1) * ROW_SPACING + PAD_BOTTOM);
+  const numCols  = maxDepth + 1;
+  const canvasW  = Math.max(900, PAD_LEFT + (numCols - 1) * COL_SPACING + NW / 2 + PAD_RIGHT);
+  const canvasH  = Math.max(520, PAD_TOP + Math.max(maxNodesInCol, 1) * ROW_SPACING + PAD_BOTTOM);
 
-  return { positions, canvasW, canvasH };
+  return { positions, canvasW, canvasH, numCols };
 }
+
 
 // ─── Orthogonal (Manhattan) path ─────────────────────────────────────────────
 /**
@@ -435,7 +465,7 @@ const SchematicView = ({ graph, path, onNodeClick }) => {
   }, [path]);
 
   // Layout + canvas size computed together, memoised on node/link count changes
-  const { positions, canvasW, canvasH } = useMemo(
+  const { positions, canvasW, canvasH, numCols } = useMemo(
     () => computeLayout(nodes, links),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [nodes.length, links.length]
@@ -521,8 +551,8 @@ const SchematicView = ({ graph, path, onNodeClick }) => {
             {nodes.length} NODES · {links.length} EDGES
           </text>
 
-          {/* Column rail guides (subtle vertical lines) */}
-          {Array.from({ length: 4 }, (_, i) => {
+          {/* Column rail guides — one per depth level */}
+          {Array.from({ length: numCols }, (_, i) => {
             const cx = PAD_LEFT + i * COL_SPACING;
             return (
               <line
