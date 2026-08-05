@@ -1,10 +1,6 @@
 const vscode = require('vscode');
-const path = require('path');
-const FormData = require('form-data');
 
 const SUPPORTED_EXTENSIONS = new Set(['.py', '.java']);
-const SKIPPED_DIRECTORIES = new Set(['.git', '.idea', '.vscode', '__pycache__', 'node_modules', '.venv', 'venv']);
-
 
 const DECORATIONS = {
   source: vscode.window.createTextEditorDecorationType({
@@ -26,52 +22,7 @@ const DECORATIONS = {
 
 let saveDebounceTimer = null;
 
-async function uploadProject(projectUri, backendUrl) {
-  const files = [];
-  let fileCount = 0;
-
-  async function addDirectory(directoryUri) {
-    const entries = await vscode.workspace.fs.readDirectory(directoryUri);
-    for (const [name, type] of entries) {
-      const entryUri = vscode.Uri.joinPath(directoryUri, name);
-      if (type === vscode.FileType.Directory) {
-        if (!SKIPPED_DIRECTORIES.has(name)) await addDirectory(entryUri);
-        continue;
-      }
-      if (type !== vscode.FileType.File || !SUPPORTED_EXTENSIONS.has(path.extname(name).toLowerCase())) continue;
-      if (fileCount >= 5000) throw new Error('Project contains more than 5000 supported files');
-
-      const content = await vscode.workspace.fs.readFile(entryUri);
-      const relativePath = path.relative(projectUri.fsPath, entryUri.fsPath).replace(/\\\\/g, '/');
-      files.push({ content: Buffer.from(content), relativePath });
-      fileCount += 1;
-    }
-  }
-
-  await addDirectory(projectUri);
-  if (fileCount === 0) throw new Error('No Python or Java files were found in the selected project');
-
-  const form = new FormData();
-  form.append('folder_name', path.basename(projectUri.fsPath) || 'uploaded_project');
-  for (const file of files) {
-    form.append('files', file.content, { filename: file.relativePath });
-  }
-
-  const response = await fetch(`${backendUrl}/api/cve/scan/upload`, {
-    method: 'POST',
-    body: form,
-    ...(form.getHeaders && { headers: form.getHeaders() })
-  });
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Project upload failed with status ${response.status}${errorText ? `: ${errorText}` : ''}`);
-  }
-  return response.json();
-}
-
-async function scanProject(projectPath, projectUri, backendUrl, scanMode) {
-  if (scanMode === 'upload') return uploadProject(projectUri, backendUrl);
-
+async function scanProject(projectPath, backendUrl) {
   const scanResponse = await fetch(`${backendUrl}/api/cve/scan`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -80,31 +31,27 @@ async function scanProject(projectPath, projectUri, backendUrl, scanMode) {
   if (scanResponse.ok) return scanResponse.json();
 
   const errorText = await scanResponse.text();
-  const unavailablePath = scanResponse.status === 400 && /project_path must be an existing directory/i.test(errorText);
-  if (scanMode === 'auto' && unavailablePath) return uploadProject(projectUri, backendUrl);
   throw new Error(`Scan request failed with status ${scanResponse.status}${errorText ? `: ${errorText}` : ''}`);
 }
 
-async function analyzeFile(document, selectedProjectUri) {
+async function analyzeFile(document) {
   const config = vscode.workspace.getConfiguration('vulngraph');
   const backendUrl = config.get('backendUrl', 'http://localhost:8002');
 
-  try {
-    const workspaceFolder = document ? vscode.workspace.getWorkspaceFolder(document.uri) : undefined;
-    const projectUri = selectedProjectUri || workspaceFolder?.uri || vscode.workspace.workspaceFolders?.[0]?.uri;
-    if (!projectUri) throw new Error('Open a project folder or use "VulnGraph: Select and Analyze Project"');
-    const localWorkspacePath = projectUri.fsPath;
-    // A Dockerized backend cannot access host paths such as C:\\project. Allow a
-    // configured container-visible path while retaining the local default.
-    const configuredProjectPath = config.get('projectPath', '').trim();
-    const projectPath = configuredProjectPath || localWorkspacePath;
-    const scanMode = config.get('scanMode', 'auto');
+  const workspaceFolder = (document ? vscode.workspace.getWorkspaceFolder(document.uri) : undefined) || vscode.workspace.workspaceFolders?.[0];
+  const projectPath = workspaceFolder?.uri.fsPath;
 
-    const data = await scanProject(projectPath, projectUri, backendUrl, scanMode);
+  if (!projectPath) {
+    vscode.window.showErrorMessage('No workspace folder is open.');
+    return;
+  }
+
+  try {
+    const data = await scanProject(projectPath, backendUrl);
 
     if (!document) {
       vscode.window.showInformationMessage(
-        `VulnGraph: Analysis complete. Found ${data.sources || 0} ENTRY and ${data.sinks || 0} SINK nodes in the selected project.`
+        `VulnGraph: Analysis complete for ${workspaceFolder.name || 'workspace'}. Found ${data.sources || 0} ENTRY and ${data.sinks || 0} SINK nodes.`
       );
       return;
     }
@@ -183,28 +130,14 @@ function activate(context) {
   context.subscriptions.push(
     vscode.commands.registerCommand('vulngraph.analyzeFile', () => {
       const doc = vscode.window.activeTextEditor?.document;
-      if (doc) analyzeFile(doc);
+      analyzeFile(doc);
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('vulngraph.analyzeWorkspace', () => {
       const doc = vscode.window.activeTextEditor?.document;
-      if (doc) analyzeFile(doc);
-    })
-  );
-
-  context.subscriptions.push(
-    vscode.commands.registerCommand('vulngraph.selectAndAnalyzeProject', async () => {
-      const selection = await vscode.window.showOpenDialog({
-        canSelectFiles: false,
-        canSelectFolders: true,
-        canSelectMany: false,
-        openLabel: 'Analyze Project'
-      });
-      if (!selection?.[0]) return;
-      const doc = vscode.window.activeTextEditor?.document;
-      analyzeFile(doc, selection[0]);
+      analyzeFile(doc);
     })
   );
 }

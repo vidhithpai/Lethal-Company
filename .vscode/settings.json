@@ -1,3 +1,5 @@
 {
-    "java.compile.nullAnalysis.mode": "automatic"
+    "java.compile.nullAnalysis.mode": "automatic",
+    "vulngraph.backendUrl": "http://localhost:8002",
+    "vulngraph.projectPath": "/app/demo_project"
 }
