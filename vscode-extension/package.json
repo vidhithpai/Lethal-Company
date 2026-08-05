@@ -2,8 +2,12 @@
   "name": "vulngraph",
   "displayName": "VulnGraph Security Analyzer",
   "description": "Real-time ENTRY/SINK/GUARD detection with local analysis",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "publisher": "vulngraph-dev",
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "node -e \"console.log('Compiling VulnGraph extension...')\""
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -13,7 +17,8 @@
   ],
   "activationEvents": [
     "onLanguage:python",
-    "onLanguage:java"
+    "onLanguage:java",
+    "onStartupFinished"
   ],
   "main": "./extension.js",
   "contributes": {
