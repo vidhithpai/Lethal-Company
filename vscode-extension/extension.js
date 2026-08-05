@@ -23,38 +23,67 @@ const DECORATIONS = {
 let saveDebounceTimer = null;
 
 async function scanProject(projectPath, backendUrl) {
+  console.log('Backend request sent');
   const scanResponse = await fetch(`${backendUrl}/api/cve/scan`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ project_path: projectPath })
   });
-  if (scanResponse.ok) return scanResponse.json();
+  if (scanResponse.ok) {
+    const data = await scanResponse.json();
+    return data;
+  }
 
   const errorText = await scanResponse.text();
   throw new Error(`Scan request failed with status ${scanResponse.status}${errorText ? `: ${errorText}` : ''}`);
 }
 
 async function analyzeFile(document) {
+  if (!document) return;
+
+  const ext = document.fileName ? document.fileName.substring(document.fileName.lastIndexOf('.')).toLowerCase() : '';
+  if (!['.py', '.java'].includes(ext) && !['python', 'java'].includes(document.languageId)) {
+    return;
+  }
+
   const config = vscode.workspace.getConfiguration('vulngraph');
   const backendUrl = config.get('backendUrl', 'http://localhost:8002');
 
-  const workspaceFolder = (document ? vscode.workspace.getWorkspaceFolder(document.uri) : undefined) || vscode.workspace.workspaceFolders?.[0];
-  const projectPath = workspaceFolder?.uri.fsPath;
-
-  if (!projectPath) {
+  const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri) || vscode.workspace.workspaceFolders?.[0];
+  if (!workspaceFolder) {
     vscode.window.showErrorMessage('No workspace folder is open.');
     return;
   }
 
+  const path = require('path');
+  const fs = require('fs');
+
+  const docFsPath = document.uri.fsPath;
+  let projectPath = workspaceFolder.uri.fsPath;
+
+  // Walk up from document folder to workspace root to resolve specific sub-project folder (e.g. demo_project, sample_project)
+  let currentDir = path.dirname(docFsPath);
+  const wsFsPathNorm = workspaceFolder.uri.fsPath.replace(/\\/g, '/').toLowerCase();
+
+  while (currentDir) {
+    const normCurrent = currentDir.replace(/\\/g, '/').toLowerCase();
+    if (!normCurrent.startsWith(wsFsPathNorm)) break;
+
+    const files = fs.existsSync(currentDir) ? fs.readdirSync(currentDir) : [];
+    const hasProjectFile = files.some(f => ['requirements.txt', 'pom.xml', 'build.gradle', 'package.json'].includes(f));
+    const isSubdirOfWs = path.dirname(currentDir).replace(/\\/g, '/').toLowerCase() === wsFsPathNorm;
+
+    if (hasProjectFile || (isSubdirOfWs && (ext === '.py' || ext === '.java'))) {
+      projectPath = currentDir;
+      break;
+    }
+
+    if (normCurrent === wsFsPathNorm) break;
+    currentDir = path.dirname(currentDir);
+  }
+
   try {
     const data = await scanProject(projectPath, backendUrl);
-
-    if (!document) {
-      vscode.window.showInformationMessage(
-        `VulnGraph: Analysis complete for ${workspaceFolder.name || 'workspace'}. Found ${data.sources || 0} ENTRY and ${data.sinks || 0} SINK nodes.`
-      );
-      return;
-    }
 
     // Fetch full graph nodes for line decoration matching (/api/graph)
     const graphResp = await fetch(`${backendUrl}/api/graph`);
@@ -62,24 +91,44 @@ async function analyzeFile(document) {
       throw new Error(`Graph fetch failed with status ${graphResp.status}`);
     }
     const graph = await graphResp.json();
+    console.log('Backend response received');
 
     const editor = vscode.window.activeTextEditor;
     if (!editor || editor.document.uri.toString() !== document.uri.toString()) return;
 
-    // Platform-safe path normalization (Windows backslashes vs POSIX forward slashes)
-    const norm = p => (p || '').replace(/\\/g, '/');
-    const relPath = norm(vscode.workspace.asRelativePath(document.uri, false));
+    const path = require('path');
+
+    // Platform-safe path normalization (Windows backslashes vs POSIX forward slashes & lowercase)
+    const norm = p => (p || '').replace(/\\/g, '/').toLowerCase();
+    const docFsPathNorm = norm(document.uri.fsPath);
+    const relPathNorm = norm(vscode.workspace.asRelativePath(document.uri, false));
+    const docFileNameNorm = norm(path.basename(document.uri.fsPath));
 
     const sourceRanges = [];
     const sinkRanges = [];
     const guardRanges = [];
 
     for (const node of graph.nodes || []) {
-      if (!node.file) continue;
-
       const nodeFileNorm = norm(node.file);
-      // Platform-safe relative path matching
-      if (nodeFileNorm === relPath || nodeFileNorm.endsWith('/' + relPath) || relPath.endsWith('/' + nodeFileNorm)) {
+      const nodeIdFile = norm((node.id || '').split('::')[0]);
+
+      // Robust matching against absolute fsPath, workspace relative path, node ID path, and filename
+      const isMatch = Boolean(
+        (nodeFileNorm && nodeFileNorm === docFsPathNorm) ||
+        (nodeFileNorm && nodeFileNorm === relPathNorm) ||
+        (nodeFileNorm && docFsPathNorm.endsWith(nodeFileNorm)) ||
+        (nodeFileNorm && nodeFileNorm.endsWith('/' + relPathNorm)) ||
+        (relPathNorm && relPathNorm.endsWith('/' + nodeFileNorm)) ||
+        (nodeIdFile && nodeIdFile === relPathNorm) ||
+        (nodeIdFile && docFsPathNorm.endsWith('/' + nodeIdFile)) ||
+        (nodeIdFile && docFsPathNorm.endsWith(nodeIdFile)) ||
+        (relPathNorm && relPathNorm.endsWith(nodeIdFile)) ||
+        (nodeIdFile && nodeIdFile.endsWith(relPathNorm)) ||
+        (nodeIdFile && nodeIdFile.endsWith('/' + docFileNameNorm)) ||
+        (nodeIdFile && nodeIdFile === docFileNameNorm)
+      );
+
+      if (isMatch) {
         const line = (node.line || 1) - 1;
         const clampedLine = Math.max(0, Math.min(line, document.lineCount - 1));
         const lineRange = document.lineAt(clampedLine).range;
@@ -100,6 +149,7 @@ async function analyzeFile(document) {
     editor.setDecorations(DECORATIONS.source, sourceRanges);
     editor.setDecorations(DECORATIONS.sink, sinkRanges);
     editor.setDecorations(DECORATIONS.sanitizer, guardRanges);
+    console.log('Decorations applied');
 
     vscode.window.showInformationMessage(
       `VulnGraph: Analysis complete. Found ${sourceRanges.length} ENTRY, ${sinkRanges.length} SINK, and ${guardRanges.length} GUARD nodes in this file. (Workspace total: ${data.sources || 0} sources, ${data.sinks || 0} sinks)`
@@ -117,29 +167,51 @@ function debouncedAnalyze(document) {
 }
 
 function activate(context) {
+  console.log('Extension activated');
+  // Listen for file save events
   context.subscriptions.push(
     vscode.workspace.onDidSaveTextDocument(doc => {
       const config = vscode.workspace.getConfiguration('vulngraph');
       if (!config.get('analyzeOnSave', true)) return;
-      if (['python', 'java'].includes(doc.languageId)) {
-        debouncedAnalyze(doc);
+      debouncedAnalyze(doc);
+    })
+  );
+
+  // Listen for editor tab change events (decorations render when switching tabs)
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor(editor => {
+      if (editor?.document) {
+        analyzeFile(editor.document);
       }
     })
   );
 
+  // Listen for file open events
+  context.subscriptions.push(
+    vscode.workspace.onDidOpenTextDocument(doc => {
+      analyzeFile(doc);
+    })
+  );
+
+  // Register manual commands
   context.subscriptions.push(
     vscode.commands.registerCommand('vulngraph.analyzeFile', () => {
       const doc = vscode.window.activeTextEditor?.document;
-      analyzeFile(doc);
+      if (doc) analyzeFile(doc);
     })
   );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('vulngraph.analyzeWorkspace', () => {
       const doc = vscode.window.activeTextEditor?.document;
-      analyzeFile(doc);
+      if (doc) analyzeFile(doc);
     })
   );
+
+  // Trigger immediate analysis on active document upon activation
+  if (vscode.window.activeTextEditor?.document) {
+    analyzeFile(vscode.window.activeTextEditor.document);
+  }
 }
 
 function deactivate() {
