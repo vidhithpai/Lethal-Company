@@ -12,7 +12,7 @@
   - 🔴 **SINK** (`sink` nodes): Highlights dangerous operations (SQL execution, command execution, `eval`).
   - 🟣 **GUARD** (`sanitizer` nodes): Highlights sanitization and validation calls.
 - **Automated Analysis on Save**: Automatically re-analyzes Python (`.py`) and Java (`.java`) files upon saving (debounced by 1500ms).
-- **Manual Commands**: Run `VulnGraph: Analyze Current File` or `VulnGraph: Analyze Workspace` on demand.
+- **Manual Commands**: Run `VulnGraph: Analyze Current File`, `VulnGraph: Analyze Workspace`, or `VulnGraph: Select and Analyze Project` on demand.
 
 ---
 
@@ -39,11 +39,12 @@ You can customize extension behavior in VS Code Settings (`Ctrl+,` or `Cmd+,` ->
 | :--- | :--- | :--- | :--- |
 | `vulngraph.backendUrl` | `string` | `http://localhost:8002` | URL of the local VulnGraph backend server |
 | `vulngraph.projectPath` | `string` | _(empty)_ | Path that the backend can access. Set this to `/app/demo_project` or `/app/sample_project` when using the supplied Docker setup. |
+| `vulngraph.scanMode` | `auto` | `auto` | `auto` scans by path, then uploads Python/Java files if a Docker backend cannot access the host path. Use `path` or `upload` to force a mode. |
 | `vulngraph.analyzeOnSave` | `boolean` | `true` | Automatically re-analyze supported files on save (1500ms debounce) |
 
 ### Testing with Docker
 
-The extension runs on the host, while the backend container sees only its mounted paths. To test the supplied Docker setup, open `demo_project` in VS Code and set `vulngraph.projectPath` to `/app/demo_project` in the workspace settings. For a different project, mount it into the backend container and set this value to the corresponding container path.
+The extension runs on the host, while the backend container sees only its mounted paths. The default `vulngraph.scanMode` of `auto` uploads the selected project's Python and Java files when its local path is unavailable to Docker. Use **VulnGraph: Select and Analyze Project** to choose any project folder. Set `vulngraph.projectPath` only when you have mounted a project and want the backend to scan that container path directly.
 
 ---
 
@@ -72,3 +73,4 @@ To package the extension locally into a VSIX file for distribution:
 
 - `vulngraph.analyzeFile`: Triggers security analysis for the currently active editor file.
 - `vulngraph.analyzeWorkspace`: Triggers security analysis for the entire workspace.
+- `vulngraph.selectAndAnalyzeProject`: Opens a folder picker and analyzes the selected project; Docker backends automatically receive an upload when needed.
