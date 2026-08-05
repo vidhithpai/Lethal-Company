@@ -3,6 +3,8 @@ import ForceGraph3D from "react-force-graph-3d";
 import SpriteText from "three-spritetext";
 import * as THREE from "three";
 import useStore from "../../store/useStore";
+import SchematicView from "./SchematicView";
+import ViewToggle from "./ViewToggle";
 
 const RISK_COLORS = {
   critical: "#EF4444",
@@ -137,13 +139,15 @@ function buildNodeObject(node, isOnPath) {
   return group;
 }
 
-// ─── GraphCanvas (3D) ─────────────────────────────────────────────────────────
+// ─── GraphCanvas (3D + 2D toggle) ────────────────────────────────────────────
 const GraphCanvas = ({ onNodeClick }) => {
   const graph        = useStore((state) => state.graph);
   const path         = useStore((state) => state.path);
   const containerRef = useRef(null);
   const graphRef     = useRef(null);
   const [size, setSize] = useState({ width: 800, height: 600 });
+  // View mode — '3d' is the default; never persisted to localStorage
+  const [viewMode, setViewMode] = useState('3d');
 
   // Track container dimensions
   useEffect(() => {
@@ -213,56 +217,73 @@ const GraphCanvas = ({ onNodeClick }) => {
       ref={containerRef}
       style={{ position: "relative", width: "100%", height: "100%" }}
     >
-      <ForceGraph3D
-        ref={graphRef}
-        width={size.width}
-        height={size.height}
-        graphData={graph}
+      {/* ── View mode toggle — top-right of canvas, above legend ─────────── */}
+      <ViewToggle mode={viewMode} onChange={setViewMode} />
 
-        // ── Node rendering ──────────────────────────────────────────────────
-        nodeLabel={(node) =>
-          `${node.label || node.id} · ${node.type || "node"} · line ${node.line || "?"}`
-        }
-        nodeThreeObject={(node) =>
-          buildNodeObject(node, pathNodeSet.has(node.id))
-        }
-        nodeThreeObjectExtend={false}  // our group IS the whole object
-        onNodeClick={(node) => onNodeClick(node)}
+      {/* ── 3D view (default) ─────────────────────────────────────────────── */}
+      {viewMode === '3d' && (
+        <>
+          <ForceGraph3D
+            ref={graphRef}
+            width={size.width}
+            height={size.height}
+            graphData={graph}
 
-        // ── Node size (used by force engine for collision) ──────────────────
-        nodeVal={(node) => getNodeSize(node) / 2}
+            // ── Node rendering ──────────────────────────────────────────────────
+            nodeLabel={(node) =>
+              `${node.label || node.id} · ${node.type || "node"} · line ${node.line || "?"}`
+            }
+            nodeThreeObject={(node) =>
+              buildNodeObject(node, pathNodeSet.has(node.id))
+            }
+            nodeThreeObjectExtend={false}  // our group IS the whole object
+            onNodeClick={(node) => onNodeClick(node)}
 
-        // ── Edge rendering ──────────────────────────────────────────────────
-        linkWidth={(link) => {
-          const s = link.source?.id || link.source;
-          const t = link.target?.id || link.target;
-          return pathEdgeSet.has(`${s}->${t}`) ? 3.5 : 1;
-        }}
-        linkColor={(link) => {
-          const s = link.source?.id || link.source;
-          const t = link.target?.id || link.target;
-          return getEdgeColor(link, pathEdgeSet.has(`${s}->${t}`));
-        }}
-        linkOpacity={0.7}
+            // ── Node size (used by force engine for collision) ──────────────────
+            nodeVal={(node) => getNodeSize(node) / 2}
 
-        // ── Directional particles (attack path animation) ───────────────────
-        linkDirectionalParticles={(link) => {
-          const s = link.source?.id || link.source;
-          const t = link.target?.id || link.target;
-          return pathEdgeSet.has(`${s}->${t}`) ? 5 : 0;
-        }}
-        linkDirectionalParticleWidth={2.5}
-        linkDirectionalParticleColor={() => "#ef4444"}
-        linkDirectionalArrowLength={4}
-        linkDirectionalArrowRelPos={1}
+            // ── Edge rendering ──────────────────────────────────────────────────
+            linkWidth={(link) => {
+              const s = link.source?.id || link.source;
+              const t = link.target?.id || link.target;
+              return pathEdgeSet.has(`${s}->${t}`) ? 3.5 : 1;
+            }}
+            linkColor={(link) => {
+              const s = link.source?.id || link.source;
+              const t = link.target?.id || link.target;
+              return getEdgeColor(link, pathEdgeSet.has(`${s}->${t}`));
+            }}
+            linkOpacity={0.7}
 
-        // ── Scene ───────────────────────────────────────────────────────────
-        backgroundColor="#080c14"
-        showNavInfo={false}
-        cooldownTicks={120}
-      />
+            // ── Directional particles (attack path animation) ───────────────────
+            linkDirectionalParticles={(link) => {
+              const s = link.source?.id || link.source;
+              const t = link.target?.id || link.target;
+              return pathEdgeSet.has(`${s}->${t}`) ? 5 : 0;
+            }}
+            linkDirectionalParticleWidth={2.5}
+            linkDirectionalParticleColor={() => "#ef4444"}
+            linkDirectionalArrowLength={4}
+            linkDirectionalArrowRelPos={1}
 
-      <GraphLegend />
+            // ── Scene ───────────────────────────────────────────────────────────
+            backgroundColor="#080c14"
+            showNavInfo={false}
+            cooldownTicks={120}
+          />
+
+          <GraphLegend />
+        </>
+      )}
+
+      {/* ── 2D PCB schematic view ─────────────────────────────────────────── */}
+      {viewMode === '2d' && (
+        <SchematicView
+          graph={graph}
+          path={path}
+          onNodeClick={onNodeClick}
+        />
+      )}
     </div>
   );
 };
