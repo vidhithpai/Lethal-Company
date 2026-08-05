@@ -25,10 +25,6 @@
       {
         "command": "vulngraph.analyzeWorkspace",
         "title": "VulnGraph: Analyze Workspace"
-      },
-      {
-        "command": "vulngraph.selectAndAnalyzeProject",
-        "title": "VulnGraph: Select and Analyze Project"
       }
     ],
     "configuration": {
@@ -38,22 +34,6 @@
           "type": "string",
           "default": "http://localhost:8002",
           "description": "VulnGraph backend URL (default: http://localhost:8002)"
-        },
-        "vulngraph.projectPath": {
-          "type": "string",
-          "default": "",
-          "description": "Optional path visible to the backend for scanning. Use a container path such as /app/demo_project when the backend runs in Docker; leave empty when it runs locally."
-        },
-        "vulngraph.scanMode": {
-          "type": "string",
-          "default": "auto",
-          "enum": ["auto", "path", "upload"],
-          "enumDescriptions": [
-            "Scan by path and upload the project only when the backend cannot access that path. Best choice for local or Docker backends.",
-            "Always scan by path. The backend must be able to access the selected folder.",
-            "Always upload Python and Java files before scanning. Useful when the backend runs in Docker."
-          ],
-          "description": "How the selected project is sent to the backend."
         },
         "vulngraph.analyzeOnSave": {
           "type": "boolean",
