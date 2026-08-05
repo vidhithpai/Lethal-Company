@@ -21,65 +21,64 @@ const T = {
 };
 
 // ─── Node chip dimensions ────────────────────────────────────────────────────
-const NW = 148;   // chip width
-const NH = 44;    // chip height
-const PIN_LEN = 12;
+const NW      = 160;   // chip width
+const NH      = 48;    // chip height
+const PIN_LEN = 14;
+
+// ─── Layout constants ─────────────────────────────────────────────────────────
+const COL_SPACING = 300;   // px between column centres
+const ROW_SPACING = 130;   // px between node centres in a column
+const PAD_LEFT    = 160;   // canvas left margin (room for source connectors + pins)
+const PAD_TOP     = 90;    // canvas top margin
+const PAD_RIGHT   = 140;   // canvas right margin
+const PAD_BOTTOM  = 100;   // canvas bottom margin
 
 // ─── Type metadata ───────────────────────────────────────────────────────────
 function typeMeta(type) {
   const t = String(type || "").toLowerCase();
   switch (t) {
-    case "source":
-      return { color: T.trace,   tag: "SRC", dash: "none",  opacity: 1 };
-    case "sink":
-      return { color: T.danger,  tag: "SINK", dash: "none", opacity: 1 };
-    case "sanitizer":
-      return { color: T.guard,   tag: "FLT",  dash: "5 3",  opacity: 1 };
+    case "source":       return { color: T.trace,   tag: "SRC",  dash: "none", opacity: 1    };
+    case "sink":         return { color: T.danger,  tag: "SINK", dash: "none", opacity: 1    };
+    case "sanitizer":    return { color: T.guard,   tag: "FLT",  dash: "5 3",  opacity: 1    };
     case "intermediate":
-    case "function":
-      return { color: T.warn,    tag: "INT",  dash: "none",  opacity: 0.9 };
-    case "patched":
-      return { color: T.patched, tag: "PAT",  dash: "3 3",  opacity: 0.52 };
-    default:
-      return { color: T.inkDim,  tag: "—",    dash: "none",  opacity: 0.8 };
+    case "function":     return { color: T.warn,    tag: "INT",  dash: "none", opacity: 0.9  };
+    case "patched":      return { color: T.patched, tag: "PAT",  dash: "3 3",  opacity: 0.52 };
+    default:             return { color: T.inkDim,  tag: "—",    dash: "none", opacity: 0.8  };
   }
 }
 
-// ─── Edge colour ─────────────────────────────────────────────────────────────
+// ─── Edge colour / dash ───────────────────────────────────────────────────────
 function edgeColor(link, isOnPath) {
-  if (link.patched)              return T.patched;
+  if (link.patched)                    return T.patched;
   if (isOnPath || link.on_attack_path) return T.danger;
   const t = String(link.type || "").toLowerCase();
-  if (t === "sanitized")         return T.guard;
+  if (t === "sanitized")               return T.guard;
   return T.traceDim;
 }
 
 function edgeDash(link, isOnPath) {
-  if (link.patched)              return "2 5";
+  if (link.patched)                    return "2 5";
   if (isOnPath || link.on_attack_path) return "none";
   const t = String(link.type || "").toLowerCase();
-  if (t === "sanitized")         return "6 4";
+  if (t === "sanitized")               return "6 4";
   return "none";
 }
 
 // ─── Layout ──────────────────────────────────────────────────────────────────
 /**
- * Simple layered column layout — no physics, no external lib.
+ * Returns { positions: { [id]: {x, y} }, canvasW, canvasH }
  *
  * Columns (left → right):
  *   0 : source
- *   1 : function / intermediate  (first hop from source)
- *   2 : sanitizer + normal/function (second hop)
+ *   1 : function / intermediate  + high-degree normals
+ *   2 : sanitizer + low-degree normals
  *   3 : sink + patched
  *
- * Nodes that don't fit a type bucket go to column 1.
+ * Every position is in absolute pixels. The SVG gets these dimensions so
+ * the canvas is as large as needed — the parent scrolls.
  */
-function computeLayout(nodes, links, W, H) {
+function computeLayout(nodes, links) {
   const COLS = 4;
-  const COL_X = [0.10, 0.33, 0.57, 0.80]; // fractional x centres
-  const PAD_TOP = 60;
-
-  // bucket
   const buckets = Array.from({ length: COLS }, () => []);
 
   nodes.forEach((n) => {
@@ -95,103 +94,118 @@ function computeLayout(nodes, links, W, H) {
     } else if (t === "function" || t === "intermediate") {
       buckets[1].push(n.id);
     } else {
-      // "normal" or unknown — distribute across middle cols by degree
+      // "normal" / unknown — distribute by degree
       const degree = links.filter(
         (l) =>
-          (l.source === n.id || l.source?.id === n.id) ||
-          (l.target === n.id || l.target?.id === n.id)
+          l.source === n.id || l.source?.id === n.id ||
+          l.target === n.id || l.target?.id === n.id
       ).length;
       buckets[degree > 2 ? 1 : 2].push(n.id);
     }
   });
 
+  const colX = Array.from({ length: COLS }, (_, i) => PAD_LEFT + i * COL_SPACING);
   const positions = {};
+  let maxRows = 0;
+
   buckets.forEach((ids, colIdx) => {
-    const count = ids.length;
-    const x = COL_X[colIdx] * W;
+    maxRows = Math.max(maxRows, ids.length);
     ids.forEach((id, rowIdx) => {
-      const slotH = (H - PAD_TOP) / Math.max(count, 1);
-      const y = PAD_TOP + slotH * rowIdx + slotH / 2;
-      positions[id] = { x, y };
+      positions[id] = {
+        x: colX[colIdx],
+        y: PAD_TOP + rowIdx * ROW_SPACING + ROW_SPACING / 2,
+      };
     });
   });
 
-  return positions;
+  const canvasW = PAD_LEFT + (COLS - 1) * COL_SPACING + NW / 2 + PAD_RIGHT;
+  const canvasH = Math.max(520, PAD_TOP + Math.max(maxRows, 1) * ROW_SPACING + PAD_BOTTOM);
+
+  return { positions, canvasW, canvasH };
 }
 
 // ─── Orthogonal (Manhattan) path ─────────────────────────────────────────────
+/**
+ * Draws a right-angle route:
+ *   exit right-pin  → horizontal to midX → vertical to target Y → horizontal to left-pin
+ *
+ * If the source is to the right of the target (back-edge), arcs around the
+ * outside with a wider detour.
+ */
 function manhattanPath(ax, ay, bx, by) {
-  // exit right → mid → enter left
-  const ex = ax + NW / 2 + PIN_LEN;   // right pin exit
-  const tx = bx - NW / 2 - PIN_LEN;  // left  pin entry
+  const exitX  = ax + NW / 2 + PIN_LEN;
+  const entryX = bx - NW / 2 - PIN_LEN;
 
-  // If source is right of target, curve back
-  if (ex >= tx - 10) {
-    const midX = Math.min(ax, bx) - 30;
-    return `M ${ax + NW / 2} ${ay}
-            H ${ex}
-            V ${ay + (by > ay ? 30 : -30)}
-            H ${midX}
-            V ${by}
-            H ${tx}
-            H ${bx - NW / 2}`;
+  // Back-edge: loop around below
+  if (exitX >= entryX - 20) {
+    const loopY = Math.max(ay, by) + ROW_SPACING * 0.55;
+    const leftX = Math.min(ax, bx) - NW / 2 - 40;
+    return [
+      `M ${ax + NW / 2} ${ay}`,
+      `H ${exitX}`,
+      `V ${loopY}`,
+      `H ${leftX}`,
+      `V ${by}`,
+      `H ${bx - NW / 2}`,
+    ].join(" ");
   }
 
-  const midX = (ex + tx) / 2;
-  return `M ${ax + NW / 2} ${ay}
-          H ${midX}
-          V ${by}
-          H ${bx - NW / 2}`;
+  const midX = (exitX + entryX) / 2;
+  return [
+    `M ${ax + NW / 2} ${ay}`,
+    `H ${midX}`,
+    `V ${by}`,
+    `H ${bx - NW / 2}`,
+  ].join(" ");
 }
 
-// ─── Chip component ──────────────────────────────────────────────────────────
+// ─── Chip ─────────────────────────────────────────────────────────────────────
 function Chip({ node, pos, isSelected, isOnPath, onNodeClick }) {
-  const m    = typeMeta(node.type);
-  const x    = pos.x - NW / 2;
-  const y    = pos.y - NH / 2;
-  const cx   = pos.x;
-  const cy   = pos.y;
+  const m   = typeMeta(node.type);
+  const x   = pos.x - NW / 2;
+  const y   = pos.y - NH / 2;
+  const cx  = pos.x;
+  const cy  = pos.y;
+
   const isSink = String(node.type || "").toLowerCase() === "sink";
   const isSan  = String(node.type || "").toLowerCase() === "sanitizer";
   const isSrc  = String(node.type || "").toLowerCase() === "source";
   const isPat  = String(node.type || "").toLowerCase() === "patched";
 
-  const filterId = `glow-${node.id}`;
+  const filterId = `glow-${node.id.replace(/[^a-z0-9]/gi, "_")}`;
   const raw      = node.label || node.id || "?";
-  const labelStr = raw.length > 18 ? raw.slice(0, 17) + "…" : raw;
-
-  const strokeColor = isSelected ? T.ink : m.color;
-  const strokeW     = isSelected ? 2.2 : 1.4;
+  const labelStr = raw.length > 20 ? raw.slice(0, 19) + "…" : raw;
 
   return (
     <g
       style={{ cursor: "pointer", opacity: m.opacity }}
       onClick={() => onNodeClick && onNodeClick(node)}
     >
-      {/* Glow filter definition for sinks */}
+      {/* SVG filter — only defined if this node needs glow */}
       {isSink && (
         <defs>
-          <filter id={filterId} x="-70%" y="-70%" width="240%" height="240%">
-            <feGaussianBlur stdDeviation="7" result="blur" />
+          <filter id={filterId} x="-80%" y="-80%" width="260%" height="260%">
+            <feGaussianBlur stdDeviation="8" result="b1" />
+            <feGaussianBlur stdDeviation="4" result="b2" />
             <feMerge>
-              <feMergeNode in="blur" />
-              <feMergeNode in="blur" />
+              <feMergeNode in="b1" />
+              <feMergeNode in="b2" />
               <feMergeNode in="SourceGraphic" />
             </feMerge>
           </filter>
         </defs>
       )}
 
-      {/* Attack-path halo */}
+      {/* Attack-path selection halo */}
       {isOnPath && !isPat && (
         <rect
-          x={x - 4} y={y - 4}
-          width={NW + 8} height={NH + 8}
-          rx={7}
+          x={x - 6} y={y - 6}
+          width={NW + 12} height={NH + 12}
+          rx={8}
           fill="none"
           stroke={isSink ? T.danger : T.trace}
           strokeWidth={1.5}
-          opacity={0.45}
+          opacity={0.4}
           strokeDasharray="4 3"
         />
       )}
@@ -203,75 +217,65 @@ function Chip({ node, pos, isSelected, isOnPath, onNodeClick }) {
           width={NW} height={NH}
           rx={4}
           fill={T.panel}
-          stroke={strokeColor}
-          strokeWidth={strokeW}
+          stroke={isSelected ? T.ink : m.color}
+          strokeWidth={isSelected ? 2.2 : isPat ? 1 : 1.5}
           strokeDasharray={isSelected ? "none" : m.dash}
         />
-
         {/* Left accent bar */}
         <rect
           x={x} y={y}
-          width={6} height={NH}
-          rx="2 0 0 2"
+          width={7} height={NH}
+          rx={3}
           fill={m.color}
-          opacity={isPat ? 0.38 : 0.88}
+          opacity={isPat ? 0.35 : 0.9}
         />
-
-        {/* Sanitizer notch overlay — small triangle cut on bar */}
+        {/* Sanitizer notch in left bar */}
         {isSan && (
           <polygon
-            points={`${x},${y + NH / 2 - 7} ${x + 6},${y + NH / 2} ${x},${y + NH / 2 + 7}`}
+            points={`${x},${cy - 8} ${x + 7},${cy} ${x},${cy + 8}`}
             fill={T.panel}
-            opacity={0.9}
+            opacity={0.95}
           />
         )}
-
-        {/* Source left-entry connector mark */}
-        {isSrc && (
-          <>
-            <rect
-              x={x - 14} y={cy - 5}
-              width={8} height={10}
-              rx={1}
-              fill="none"
-              stroke={T.trace}
-              strokeWidth={1}
-              opacity={0.7}
-            />
-            <line
-              x1={x - 6} y1={cy}
-              x2={x}     y2={cy}
-              stroke={T.trace}
-              strokeWidth={1}
-              opacity={0.7}
-            />
-          </>
-        )}
       </g>
+
+      {/* Source left-connector block */}
+      {isSrc && (
+        <g opacity={0.75}>
+          <rect
+            x={x - 18} y={cy - 6}
+            width={10} height={12}
+            rx={1.5}
+            fill="none"
+            stroke={T.trace}
+            strokeWidth={1}
+          />
+          <line x1={x - 8} y1={cy} x2={x} y2={cy} stroke={T.trace} strokeWidth={1} />
+        </g>
+      )}
 
       {/* Left pin nub */}
       <line
         x1={x - PIN_LEN} y1={cy}
         x2={x}            y2={cy}
         stroke={m.color}
-        strokeWidth={1.2}
-        opacity={0.6}
+        strokeWidth={1.4}
+        opacity={0.55}
       />
       {/* Right pin nub */}
       <line
         x1={x + NW}           y1={cy}
         x2={x + NW + PIN_LEN} y2={cy}
         stroke={m.color}
-        strokeWidth={1.2}
-        opacity={0.6}
+        strokeWidth={1.4}
+        opacity={0.55}
       />
 
-      {/* Type tag — above chip */}
+      {/* Type tag (above chip) */}
       <text
-        x={x + 10}
-        y={y - 5}
+        x={x + 11} y={y - 6}
         fontFamily="'IBM Plex Mono', monospace"
-        fontSize={8}
+        fontSize={8.5}
         fill={m.color}
         letterSpacing={1.2}
         opacity={0.9}
@@ -281,11 +285,10 @@ function Chip({ node, pos, isSelected, isOnPath, onNodeClick }) {
 
       {/* Main label */}
       <text
-        x={cx + 4}
-        y={cy + 4}
+        x={cx + 4} y={cy + 4}
         textAnchor="middle"
         fontFamily="'IBM Plex Mono', monospace"
-        fontSize={10.5}
+        fontSize={11}
         fill={isPat ? T.inkFaint : T.ink}
         style={{ textDecoration: isPat ? "line-through" : "none", userSelect: "none" }}
       >
@@ -295,11 +298,10 @@ function Chip({ node, pos, isSelected, isOnPath, onNodeClick }) {
       {/* File / line sub-label */}
       {(node.file || node.line) && (
         <text
-          x={cx + 4}
-          y={cy + 16}
+          x={cx + 4} y={cy + 18}
           textAnchor="middle"
           fontFamily="'IBM Plex Mono', monospace"
-          fontSize={8}
+          fontSize={8.5}
           fill={T.inkFaint}
           style={{ userSelect: "none" }}
         >
@@ -310,7 +312,7 @@ function Chip({ node, pos, isSelected, isOnPath, onNodeClick }) {
   );
 }
 
-// ─── Edge component ──────────────────────────────────────────────────────────
+// ─── Edge ─────────────────────────────────────────────────────────────────────
 function Edge({ link, positions, pathEdgeSet }) {
   const srcId = link.source?.id ?? link.source;
   const tgtId = link.target?.id ?? link.target;
@@ -323,7 +325,7 @@ function Edge({ link, positions, pathEdgeSet }) {
   const isOnPath = pathEdgeSet.has(edgeKey);
   const color    = edgeColor(link, isOnPath);
   const dash     = edgeDash(link, isOnPath);
-  const width    = isOnPath ? 2.2 : link.on_attack_path ? 1.8 : 1.2;
+  const width    = isOnPath ? 2.4 : link.on_attack_path ? 1.8 : 1.2;
   const d        = manhattanPath(a.x, a.y, b.x, b.y);
 
   return (
@@ -333,13 +335,9 @@ function Edge({ link, positions, pathEdgeSet }) {
       stroke={color}
       strokeWidth={width}
       strokeDasharray={dash}
-      opacity={isOnPath ? 1 : link.on_attack_path ? 0.85 : 0.5}
+      opacity={isOnPath ? 0.95 : link.on_attack_path ? 0.8 : 0.45}
       markerEnd="url(#arrow)"
-      style={
-        isOnPath
-          ? { animation: "sch-pulse 1.8s ease-in-out infinite" }
-          : undefined
-      }
+      style={isOnPath ? { animation: "sch-pulse 1.8s ease-in-out infinite" } : undefined}
     />
   );
 }
@@ -348,11 +346,11 @@ function Edge({ link, positions, pathEdgeSet }) {
 function SchematicLegend() {
   const items = [
     { color: T.trace,   label: "Source · entry point" },
-    { color: T.danger,  label: "Sink · dangerous op" },
-    { color: T.guard,   label: "Sanitizer / filter" },
-    { color: T.warn,    label: "Intermediate / tainted" },
-    { color: T.inkDim,  label: "Normal · logic" },
-    { color: T.patched, label: "Patched node" },
+    { color: T.danger,  label: "Sink · dangerous op"  },
+    { color: T.guard,   label: "Sanitizer / filter"   },
+    { color: T.warn,    label: "Intermediate / tainted"},
+    { color: T.inkDim,  label: "Normal · logic"       },
+    { color: T.patched, label: "Patched node"          },
   ];
   return (
     <div
@@ -360,113 +358,73 @@ function SchematicLegend() {
         position: "absolute",
         bottom: 20,
         left: 20,
-        background: "rgba(15,37,48,0.94)",
+        background: "rgba(15,37,48,0.96)",
         border: `1px solid ${T.border}`,
         padding: "10px 14px",
         fontSize: 11,
         zIndex: 10,
+        pointerEvents: "none",
       }}
     >
-      <div
-        style={{
-          fontFamily: "'IBM Plex Mono', monospace",
-          fontSize: 9,
-          letterSpacing: 1.5,
-          color: T.inkFaint,
-          marginBottom: 8,
-          textTransform: "uppercase",
-        }}
-      >
+      <div style={{
+        fontFamily: "'IBM Plex Mono', monospace",
+        fontSize: 9, letterSpacing: 1.5, color: T.inkFaint,
+        marginBottom: 8, textTransform: "uppercase",
+      }}>
         Schematic Key
       </div>
       {items.map(({ color, label }) => (
-        <div
-          key={label}
-          style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}
-        >
-          <span
-            style={{
-              width: 10,
-              height: 10,
-              background: color,
-              flexShrink: 0,
-              borderRadius: 1,
-            }}
-          />
-          <span
-            style={{
-              color: T.inkDim,
-              fontFamily: "'IBM Plex Mono', monospace",
-              fontSize: 11,
-            }}
-          >
+        <div key={label} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+          <span style={{ width: 10, height: 10, background: color, flexShrink: 0, borderRadius: 1 }} />
+          <span style={{ color: T.inkDim, fontFamily: "'IBM Plex Mono', monospace", fontSize: 11 }}>
             {label}
           </span>
         </div>
       ))}
-      <div
-        style={{
-          borderTop: `1px solid ${T.borderSoft}`,
-          marginTop: 8,
-          paddingTop: 8,
-          color: T.inkFaint,
-          fontFamily: "'IBM Plex Mono', monospace",
-          fontSize: 9,
-          textTransform: "uppercase",
-          letterSpacing: 1,
-        }}
-      >
+      <div style={{
+        borderTop: `1px solid ${T.borderSoft}`, marginTop: 8, paddingTop: 8,
+        color: T.inkFaint, fontFamily: "'IBM Plex Mono', monospace",
+        fontSize: 9, textTransform: "uppercase", letterSpacing: 1,
+      }}>
         Trace opacity = confidence
       </div>
     </div>
   );
 }
 
-// ─── Empty / loading state ────────────────────────────────────────────────────
+// ─── Empty state ──────────────────────────────────────────────────────────────
 function EmptyState() {
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        height: "100%",
-        color: T.inkFaint,
-        fontFamily: "'IBM Plex Mono', monospace",
-        gap: 12,
-      }}
-    >
+    <div style={{
+      display: "flex", flexDirection: "column", alignItems: "center",
+      justifyContent: "center", height: "100%",
+      color: T.inkFaint, fontFamily: "'IBM Plex Mono', monospace", gap: 12,
+    }}>
       <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
         <rect x="4" y="16" width="40" height="16" rx="3" stroke={T.inkFaint} strokeWidth="1.5" />
         <line x1="0" y1="24" x2="4" y2="24" stroke={T.inkFaint} strokeWidth="1.5" />
         <line x1="44" y1="24" x2="48" y2="24" stroke={T.inkFaint} strokeWidth="1.5" />
         <circle cx="24" cy="24" r="3" fill={T.inkFaint} opacity="0.4" />
       </svg>
-      <span style={{ fontSize: 12, letterSpacing: 1, textTransform: "uppercase" }}>
-        No graph data
-      </span>
-      <span style={{ fontSize: 10, opacity: 0.6 }}>
-        Scan a project to populate the schematic
-      </span>
+      <span style={{ fontSize: 12, letterSpacing: 1, textTransform: "uppercase" }}>No graph data</span>
+      <span style={{ fontSize: 10, opacity: 0.6 }}>Scan a project to populate the schematic</span>
     </div>
   );
 }
 
 // ─── SchematicView ────────────────────────────────────────────────────────────
 /**
- * 2D PCB schematic renderer.
+ * 2D PCB schematic renderer — scrollable canvas.
  *
  * Props:
- *   graph       : { nodes: [], links: [] }   — same shape as 3D view
- *   path        : string[]                   — ordered node IDs on highlighted path
- *   onNodeClick : (node) => void             — same callback as 3D view
+ *   graph       : { nodes: [], links: [] }
+ *   path        : string[]               — highlighted attack-path node IDs
+ *   onNodeClick : (node) => void
  */
 const SchematicView = ({ graph, path, onNodeClick }) => {
   const nodes = graph?.nodes || [];
   const links = graph?.links || [];
 
-  // Build path sets for highlight
   const pathNodeSet = useMemo(() => new Set(path || []), [path]);
   const pathEdgeSet = useMemo(() => {
     const s = new Set();
@@ -476,98 +434,138 @@ const SchematicView = ({ graph, path, onNodeClick }) => {
     return s;
   }, [path]);
 
-  // Dimensions — we work in a fixed 960×560 viewBox and let SVG scale
-  const VW = 960;
-  const VH = 560;
-
-  // Compute layout positions (memoised; recomputes when nodes/links change)
-  const positions = useMemo(
-    () => computeLayout(nodes, links, VW, VH),
+  // Layout + canvas size computed together, memoised on node/link count changes
+  const { positions, canvasW, canvasH } = useMemo(
+    () => computeLayout(nodes, links),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [nodes.length, links.length]
   );
 
-  if (!nodes.length) return <EmptyState />;
+  if (!nodes.length) {
+    return (
+      <div style={{ position: "relative", width: "100%", height: "100%", background: T.bg }}>
+        <EmptyState />
+      </div>
+    );
+  }
 
   return (
+    /*
+     * Outer wrapper: position:relative so the legend can be fixed to the
+     * viewport corner of this container regardless of scroll position.
+     */
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       <style>{`
-        @keyframes sch-pulse { 0%,100%{opacity:1} 50%{opacity:0.45} }
-        @keyframes sch-heat  { 0%,100%{opacity:1} 50%{opacity:0.65} }
+        @keyframes sch-pulse { 0%,100%{opacity:0.95} 50%{opacity:0.38} }
+        /* Custom scrollbar to match the dark theme */
+        .vg-scroll::-webkit-scrollbar        { width: 8px; height: 8px; }
+        .vg-scroll::-webkit-scrollbar-track  { background: #0B1D26; }
+        .vg-scroll::-webkit-scrollbar-thumb  { background: #1C3D4B; border-radius: 4px; }
+        .vg-scroll::-webkit-scrollbar-thumb:hover { background: #245257; }
       `}</style>
 
-      {/* ── SVG canvas ─────────────────────────────────────────────────────── */}
-      <svg
-        viewBox={`0 0 ${VW} ${VH}`}
-        style={{ width: "100%", height: "100%", display: "block" }}
-        xmlns="http://www.w3.org/2000/svg"
+      {/*
+       * Scrollable viewport — both axes.
+       * The SVG inside is sized to its real pixel dimensions so nodes are
+       * laid out with full breathing room.
+       */}
+      <div
+        className="vg-scroll"
+        style={{
+          width: "100%",
+          height: "100%",
+          overflow: "auto",
+          background: T.bg,
+        }}
       >
-        <defs>
-          {/* Blueprint dot-grid background pattern */}
-          <pattern
-            id="dot-grid"
-            x="0" y="0"
-            width="20" height="20"
-            patternUnits="userSpaceOnUse"
-          >
-            <circle cx="10" cy="10" r="0.9" fill={T.dotGrid} />
-          </pattern>
-
-          {/* Arrow marker for edge ends */}
-          <marker
-            id="arrow"
-            viewBox="0 0 8 8"
-            refX="7" refY="4"
-            markerWidth="6" markerHeight="6"
-            orient="auto-start-reverse"
-          >
-            <path d="M 0 0 L 8 4 L 0 8 z" fill={T.inkFaint} opacity="0.7" />
-          </marker>
-        </defs>
-
-        {/* Background */}
-        <rect width={VW} height={VH} fill={T.bg} />
-        <rect width={VW} height={VH} fill="url(#dot-grid)" />
-
-        {/* Canvas label */}
-        <text
-          x="20" y="26"
-          fontFamily="'IBM Plex Mono', monospace"
-          fontSize={9}
-          fill={T.inkFaint}
-          letterSpacing={1.5}
+        <svg
+          width={canvasW}
+          height={canvasH}
+          xmlns="http://www.w3.org/2000/svg"
+          style={{ display: "block" }}
         >
-          SCHEMATIC · TAINT FLOW · 2D
-        </text>
+          <defs>
+            {/* Blueprint dot-grid pattern */}
+            <pattern id="dot-grid" x="0" y="0" width="24" height="24" patternUnits="userSpaceOnUse">
+              <circle cx="12" cy="12" r="1" fill={T.dotGrid} opacity="0.7" />
+            </pattern>
 
-        {/* ── Edges (drawn below nodes) ─────────────────────────────────── */}
-        {links.map((link, i) => (
-          <Edge
-            key={i}
-            link={link}
-            positions={positions}
-            pathEdgeSet={pathEdgeSet}
-          />
-        ))}
+            {/* Arrowhead marker */}
+            <marker
+              id="arrow"
+              viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="5" markerHeight="5"
+              orient="auto-start-reverse"
+            >
+              <path d="M 0 1 L 9 5 L 0 9 z" fill={T.inkFaint} opacity="0.75" />
+            </marker>
+          </defs>
 
-        {/* ── Nodes ─────────────────────────────────────────────────────── */}
-        {nodes.map((node) => {
-          const pos = positions[node.id];
-          if (!pos) return null;
-          return (
-            <Chip
-              key={node.id}
-              node={node}
-              pos={pos}
-              isSelected={pathNodeSet.has(node.id)}
-              isOnPath={pathNodeSet.has(node.id)}
-              onNodeClick={onNodeClick}
+          {/* Background */}
+          <rect width={canvasW} height={canvasH} fill={T.bg} />
+          <rect width={canvasW} height={canvasH} fill="url(#dot-grid)" />
+
+          {/* Canvas header label */}
+          <text
+            x="24" y="32"
+            fontFamily="'IBM Plex Mono', monospace"
+            fontSize={10} fill={T.inkFaint} letterSpacing={1.5}
+          >
+            SCHEMATIC · TAINT FLOW · 2D
+          </text>
+          <text
+            x="24" y="46"
+            fontFamily="'IBM Plex Mono', monospace"
+            fontSize={8.5} fill={T.inkFaint} letterSpacing={1} opacity={0.6}
+          >
+            {nodes.length} NODES · {links.length} EDGES
+          </text>
+
+          {/* Column rail guides (subtle vertical lines) */}
+          {Array.from({ length: 4 }, (_, i) => {
+            const cx = PAD_LEFT + i * COL_SPACING;
+            return (
+              <line
+                key={i}
+                x1={cx} y1={PAD_TOP - 20}
+                x2={cx} y2={canvasH - PAD_BOTTOM + 20}
+                stroke={T.border}
+                strokeWidth={1}
+                strokeDasharray="2 6"
+                opacity={0.25}
+              />
+            );
+          })}
+
+          {/* ── Edges (behind nodes) ───────────────────────────────────────── */}
+          {links.map((link, i) => (
+            <Edge
+              key={i}
+              link={link}
+              positions={positions}
+              pathEdgeSet={pathEdgeSet}
             />
-          );
-        })}
-      </svg>
+          ))}
 
-      {/* ── Legend ──────────────────────────────────────────────────────── */}
+          {/* ── Nodes ─────────────────────────────────────────────────────── */}
+          {nodes.map((node) => {
+            const pos = positions[node.id];
+            if (!pos) return null;
+            return (
+              <Chip
+                key={node.id}
+                node={node}
+                pos={pos}
+                isSelected={pathNodeSet.has(node.id)}
+                isOnPath={pathNodeSet.has(node.id)}
+                onNodeClick={onNodeClick}
+              />
+            );
+          })}
+        </svg>
+      </div>
+
+      {/* Legend stays fixed at the bottom-left of the container viewport */}
       <SchematicLegend />
     </div>
   );
