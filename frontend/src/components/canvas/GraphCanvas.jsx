@@ -3,149 +3,268 @@ import ForceGraph3D from "react-force-graph-3d";
 import SpriteText from "three-spritetext";
 import * as THREE from "three";
 import useStore from "../../store/useStore";
+import SchematicView from "./SchematicView";
+import ViewToggle from "./ViewToggle";
 
-const RISK_COLORS = {
-  critical: "#EF4444",
-  high: "#F97316",
-  medium: "#F59E0B",
-  low: "#10B981"
-};
 const getNodeColor = (node) => {
-  if (node.patched) return '#4B5563';
+  if (node.patched) return '#64748B';
   const nodeType = String(node.type || '').toLowerCase();
   const typeColors = {
     source: '#10B981',
     sink: '#EF4444',
     intermediate: '#F59E0B',
-    sanitizer: '#6366F1',
+    sanitizer: '#8B5CF6',
     function: '#3B82F6',
-    normal: '#9CA3AF',
+    normal: '#3B82F6',
   };
 
-  // Only use community color if it's a specific community, otherwise prefer type color
   if (node.community && node.community !== "application_logic" && node.community_color) {
     return node.community_color;
   }
 
-  return typeColors[nodeType] || '#6B7280';
+  return typeColors[nodeType] || '#3B82F6';
 };
 
 const getNodeSize = (node) => {
   const nodeType = String(node.type || '').toLowerCase();
-  const base = nodeType === 'normal' ? 4.5 : 6;
-  const riskMultiplier = { CRITICAL: 2.5, HIGH: 2.0, MEDIUM: 1.5, LOW: 1.0, critical: 2.5, high: 2.0, medium: 1.5, low: 1.0 };
+  const base = nodeType === 'normal' ? 4.5 : 7.0;
+  const riskMultiplier = { CRITICAL: 2.2, HIGH: 1.8, MEDIUM: 1.4, LOW: 1.0, critical: 2.2, high: 1.8, medium: 1.4, low: 1.0 };
   const risk = node.risk || 'LOW';
   const confidence = node.confidence || 0.5;
-  return base * (riskMultiplier[risk] || 1.0) * (0.5 + confidence * 0.5);
+  return base * (riskMultiplier[risk] || 1.0) * (0.6 + confidence * 0.4);
 };
 
-const getEdgeColor = (link, isOnPath) => {
-  if (link.patched) return '#374151';
-  if (isOnPath || link.on_attack_path) {
-    const conf = link.confidence || 0.7;
-    return `rgba(239, 68, 68, ${0.4 + conf * 0.6})`;
-  }
-  const conf = link.confidence || 0.7;
-  return `rgba(107, 114, 128, ${0.3 + conf * 0.4})`;
-};
+// ─── Top-Left HUD ─────────────────────────────────────────────────────────────
+const ThreatNebulaHUD = ({ stats }) => (
+  <div className="hud-panel hud-top-left">
+    <div className="hud-card-title">THREAT NEBULA</div>
+    <div className="hud-card-sub">3D NETWORK VIEW</div>
 
-const GraphLegend = () => (
-  <div style={{
-    position: 'absolute', bottom: 16, left: 16,
-    background: 'rgba(17,24,39,0.92)',
-    border: '1px solid #374151',
-    borderRadius: 8, padding: '10px 14px',
-    fontSize: 11, color: '#D1D5DB', zIndex: 10
-  }}>
-    <div style={{fontWeight:600, marginBottom:6, color:'#F9FAFB'}}>
-      Graph legend
-    </div>
-    {[
-      {color:'#10B981', label:'Source (entry point)'},
-      {color:'#EF4444', label:'Sink (dangerous op)'},
-      {color:'#F59E0B', label:'Intermediate / tainted'},
-      {color:'#6366F1', label:'Sanitizer (reduces risk)'},
-      {color:'#9CA3AF', label:'Normal (logic / getter)'},
-      {color:'#4B5563', label:'Patched node'},
-    ].map(({color, label}) => (
-      <div key={label} style={{display:'flex',alignItems:'center',gap:6,marginBottom:3}}>
-        <div style={{width:10,height:10,borderRadius:'50%',background:color,flexShrink:0}}/>
-        <span>{label}</span>
+    <div className="hud-metrics-list">
+      <div className="hud-metric-row">
+        <span className="val blue">{stats.nodes}</span>
+        <span style={{ color: "var(--text-muted)", fontSize: 10 }}>NODES</span>
       </div>
-    ))}
-    <div style={{marginTop:6,paddingTop:6,borderTop:'1px solid #374151',color:'#9CA3AF'}}>
-      Edge opacity = confidence score
+      <div className="hud-metric-row">
+        <span className="val cyan">{stats.edges}</span>
+        <span style={{ color: "var(--text-muted)", fontSize: 10 }}>DATA FLOWS</span>
+      </div>
+      <div className="hud-metric-row">
+        <span className="val green">{stats.sources}</span>
+        <span style={{ color: "var(--text-muted)", fontSize: 10 }}>SOURCES</span>
+      </div>
+      <div className="hud-metric-row">
+        <span className="val red">{stats.sinks}</span>
+        <span style={{ color: "var(--text-muted)", fontSize: 10 }}>SINKS</span>
+      </div>
     </div>
   </div>
 );
 
-// ─── Custom Three.js object per node ─────────────────────────────────────────
-function buildNodeObject(node, isOnPath) {
+// ─── Bottom-Left Legend HUD ───────────────────────────────────────────────────
+const LegendHUD = () => (
+  <div className="hud-panel hud-bottom-left">
+    <div className="hud-legend-title">LEGEND</div>
+    <div className="hud-legend-grid">
+      <div className="hud-legend-item">
+        <span className="hud-dot source" />
+        <span>Source (entry)</span>
+      </div>
+      <div className="hud-legend-item">
+        <span className="hud-dot sink" />
+        <span>Sink (dangerous)</span>
+      </div>
+      <div className="hud-legend-item">
+        <span className="hud-dot intermediate" />
+        <span>Intermediate</span>
+      </div>
+      <div className="hud-legend-item">
+        <span className="hud-dot sanitizer" />
+        <span>Sanitizer</span>
+      </div>
+      <div className="hud-legend-item">
+        <span className="hud-dot normal" />
+        <span>Normal</span>
+      </div>
+      <div className="hud-legend-item">
+        <span className="hud-dot patched" />
+        <span>Patched</span>
+      </div>
+    </div>
+    <div className="hud-legend-footer">
+      Opacity = Confidence
+    </div>
+  </div>
+);
+
+// ─── Bottom-Right Interaction Hint HUD ───────────────────────────────────────
+const ControlsHintHUD = () => (
+  <div className="hud-panel hud-bottom-right">
+    DRAG ⟳ ROTATE &bull; SCROLL 🔍 ZOOM
+  </div>
+);
+
+// ─── Animated 3D Node Object Builder ──────────────────────────────────────────
+function buildNodeObject(node, isOnPath, animatedObjectsRef) {
   const group = new THREE.Group();
   const nodeType = String(node.type || '').toLowerCase();
   const radius = getNodeSize(node) / 2;
-  const color  = getNodeColor(node);
+  const color = getNodeColor(node);
 
-  // Sphere
-  const geometry = new THREE.SphereGeometry(radius, 16, 16);
-  const material = new THREE.MeshLambertMaterial({
-    color,
-    transparent: true,
-    opacity: node.patched ? 0.45 : (nodeType === 'normal' ? 0.72 : 1.0),
-  });
-  group.add(new THREE.Mesh(geometry, material));
+  let coreMesh;
 
-  // Risk ring shell for sinks (emissive shell slightly larger)
-  if (nodeType === "sink" && node.risk) {
-    const riskCol = RISK_COLORS[node.risk.toLowerCase()] || "#ef4444";
-    const ringGeo = new THREE.SphereGeometry(radius + 1.5, 16, 16);
-    const ringMat = new THREE.MeshLambertMaterial({
-      color: riskCol,
-      transparent: true,
-      opacity: 0.18,
-      wireframe: false,
-    });
-    group.add(new THREE.Mesh(ringGeo, ringMat));
-  }
-
-  // Glow ring for path nodes
-  if (isOnPath && !node.patched) {
-    const glowGeo = new THREE.SphereGeometry(radius + 2.5, 16, 16);
-    const glowMat = new THREE.MeshLambertMaterial({
+  if (nodeType === "source") {
+    const geo = new THREE.IcosahedronGeometry(radius, 0);
+    const mat = new THREE.MeshPhongMaterial({
       color,
+      emissive: '#059669',
+      emissiveIntensity: 0.6,
+      shininess: 80,
       transparent: true,
-      opacity: 0.12,
+      opacity: node.patched ? 0.4 : 0.95,
     });
-    group.add(new THREE.Mesh(glowGeo, glowMat));
+    coreMesh = new THREE.Mesh(geo, mat);
+
+    const shellGeo = new THREE.IcosahedronGeometry(radius + 1.8, 1);
+    const shellMat = new THREE.MeshBasicMaterial({
+      color: '#10B981',
+      wireframe: true,
+      transparent: true,
+      opacity: 0.35,
+    });
+    const shell = new THREE.Mesh(shellGeo, shellMat);
+    group.add(shell);
+    group.userData.shell = shell;
+
+  } else if (nodeType === "sink") {
+    const geo = new THREE.DodecahedronGeometry(radius, 0);
+    const mat = new THREE.MeshPhongMaterial({
+      color: '#EF4444',
+      emissive: '#DC2626',
+      emissiveIntensity: 0.7,
+      shininess: 100,
+      transparent: true,
+      opacity: node.patched ? 0.4 : 0.95,
+    });
+    coreMesh = new THREE.Mesh(geo, mat);
+
+    const isHighRisk = (String(node.risk).toUpperCase() === 'CRITICAL' || String(node.risk).toUpperCase() === 'HIGH');
+    const shellGeo = new THREE.DodecahedronGeometry(radius + (isHighRisk ? 3.0 : 1.8), 1);
+    const shellMat = new THREE.MeshBasicMaterial({
+      color: '#EF4444',
+      wireframe: true,
+      transparent: true,
+      opacity: isHighRisk ? 0.45 : 0.25,
+    });
+    const shell = new THREE.Mesh(shellGeo, shellMat);
+    group.add(shell);
+    group.userData.shell = shell;
+
+    const auraGeo = new THREE.SphereGeometry(radius + 4.0, 16, 16);
+    const auraMat = new THREE.MeshLambertMaterial({
+      color: '#DC2626',
+      transparent: true,
+      opacity: isHighRisk ? 0.22 : 0.1,
+    });
+    group.add(new THREE.Mesh(auraGeo, auraMat));
+
+  } else if (nodeType === "sanitizer") {
+    const geo = new THREE.OctahedronGeometry(radius, 0);
+    const mat = new THREE.MeshPhongMaterial({
+      color: '#8B5CF6',
+      emissive: '#6D28D9',
+      emissiveIntensity: 0.5,
+      shininess: 60,
+      transparent: true,
+      opacity: node.patched ? 0.4 : 0.9,
+    });
+    coreMesh = new THREE.Mesh(geo, mat);
+
+    const shellGeo = new THREE.OctahedronGeometry(radius + 1.8, 0);
+    const shellMat = new THREE.MeshBasicMaterial({
+      color: '#8B5CF6',
+      wireframe: true,
+      transparent: true,
+      opacity: 0.4,
+    });
+    const shell = new THREE.Mesh(shellGeo, shellMat);
+    group.add(shell);
+    group.userData.shell = shell;
+
+  } else if (nodeType === "intermediate") {
+    const geo = new THREE.OctahedronGeometry(radius, 0);
+    const mat = new THREE.MeshPhongMaterial({
+      color: '#F59E0B',
+      emissive: '#D97706',
+      emissiveIntensity: 0.4,
+      transparent: true,
+      opacity: node.patched ? 0.4 : 0.9,
+    });
+    coreMesh = new THREE.Mesh(geo, mat);
+
+  } else {
+    const geo = new THREE.SphereGeometry(radius, 16, 16);
+    const mat = new THREE.MeshPhongMaterial({
+      color,
+      emissive: isOnPath ? color : '#1E293B',
+      emissiveIntensity: isOnPath ? 0.6 : 0.2,
+      shininess: 40,
+      transparent: true,
+      opacity: node.patched ? 0.35 : 0.8,
+    });
+    coreMesh = new THREE.Mesh(geo, mat);
   }
 
-  // Floating text label
-  const rawLabel = node.label || (node.id ? node.id.split(":").pop() : "?");
-  const label    = rawLabel.length > 24 ? rawLabel.slice(0, 24) + "…" : rawLabel;
-  const sprite   = new SpriteText(label);
-  sprite.color        = node.patched ? "#6B7280" : (isOnPath ? "#ffffff" : "#c8d4e8");
-  sprite.textHeight   = isOnPath ? 3.2 : (nodeType === 'normal' ? 2.0 : 2.4);
-  sprite.fontFace     = "JetBrains Mono, monospace";
-  if (node.patched) {
-    sprite.textHeight = 2.2;
-    sprite.strokeWidth = 0.5;
-    sprite.strokeColor = "#374151";
+  group.add(coreMesh);
+  group.userData.coreMesh = coreMesh;
+  group.userData.nodeType = nodeType;
+  group.userData.isOnPath = isOnPath;
+
+  if (isOnPath && !node.patched) {
+    const pathGlowGeo = new THREE.SphereGeometry(radius + 3.0, 16, 16);
+    const pathGlowMat = new THREE.MeshBasicMaterial({
+      color: nodeType === "sink" ? '#EF4444' : (nodeType === "source" ? '#10B981' : '#F59E0B'),
+      wireframe: true,
+      transparent: true,
+      opacity: 0.45,
+    });
+    const pathGlow = new THREE.Mesh(pathGlowGeo, pathGlowMat);
+    group.add(pathGlow);
+    group.userData.pathGlow = pathGlow;
   }
-  sprite.position.set(0, radius + 5, 0);
+
+  const rawLabel = node.label || (node.id ? node.id.split(":").pop() : "?");
+  const displayLabel = rawLabel.length > 22 ? rawLabel.slice(0, 22) + "…" : rawLabel;
+  let tagSuffix = "";
+  if (nodeType === "source") tagSuffix = "\nSRC";
+  else if (nodeType === "sink") tagSuffix = "\nSINK · HIGH";
+  else if (nodeType === "sanitizer") tagSuffix = "\nFLT";
+  else if (nodeType === "intermediate") tagSuffix = "\nINT";
+
+  const sprite = new SpriteText(displayLabel + tagSuffix);
+  sprite.color = node.patched ? "#64748B" : (isOnPath ? "#FFFFFF" : (nodeType === "sink" ? "#EF4444" : (nodeType === "source" ? "#10B981" : "#94A3B8")));
+  sprite.textHeight = isOnPath ? 3.4 : (nodeType === 'normal' ? 2.0 : 2.6);
+  sprite.fontFace = "JetBrains Mono, monospace";
+  sprite.position.set(0, radius + 4.5, 0);
   group.add(sprite);
+
+  if (animatedObjectsRef && animatedObjectsRef.current) {
+    animatedObjectsRef.current.push(group);
+  }
 
   return group;
 }
 
-// ─── GraphCanvas (3D) ─────────────────────────────────────────────────────────
+// ─── Main GraphCanvas Component ──────────────────────────────────────────────
 const GraphCanvas = ({ onNodeClick }) => {
   const graph        = useStore((state) => state.graph);
   const path         = useStore((state) => state.path);
   const containerRef = useRef(null);
   const graphRef     = useRef(null);
   const [size, setSize] = useState({ width: 800, height: 600 });
+  const [viewMode, setViewMode] = useState('3d');
+  const animatedObjectsRef = useRef([]);
 
-  // Track container dimensions
   useEffect(() => {
     if (!containerRef.current) return;
     const observer = new ResizeObserver((entries) => {
@@ -160,7 +279,46 @@ const GraphCanvas = ({ onNodeClick }) => {
     return () => observer.disconnect();
   }, []);
 
-  // Sets of node/edge IDs on the current highlighted attack path
+  useEffect(() => {
+    let animId;
+    let clock = 0;
+
+    const animate = () => {
+      clock += 0.02;
+      const objs = animatedObjectsRef.current;
+      for (let i = 0; i < objs.length; i++) {
+        const grp = objs[i];
+        if (!grp) continue;
+
+        if (grp.userData.coreMesh) {
+          grp.userData.coreMesh.rotation.y += 0.015;
+          grp.userData.coreMesh.rotation.x += 0.008;
+        }
+
+        if (grp.userData.shell) {
+          grp.userData.shell.rotation.y -= 0.02;
+          grp.userData.shell.rotation.z += 0.01;
+          const scalePulse = 1 + Math.sin(clock * 2.5 + i) * 0.06;
+          grp.userData.shell.scale.set(scalePulse, scalePulse, scalePulse);
+        }
+
+        if (grp.userData.pathGlow) {
+          const glowPulse = 1 + Math.sin(clock * 3.5 + i) * 0.12;
+          grp.userData.pathGlow.scale.set(glowPulse, glowPulse, glowPulse);
+        }
+      }
+      animId = requestAnimationFrame(animate);
+    };
+
+    if (viewMode === '3d') {
+      animate();
+    }
+
+    return () => {
+      if (animId) cancelAnimationFrame(animId);
+    };
+  }, [viewMode, graph]);
+
   const pathNodeSet = useMemo(() => new Set(path), [path]);
   const pathEdgeSet = useMemo(() => {
     const s = new Set();
@@ -170,27 +328,42 @@ const GraphCanvas = ({ onNodeClick }) => {
     return s;
   }, [path]);
 
-  // One-time zoom after initial graph load
+  const stats = useMemo(() => {
+    const nodes = graph?.nodes || [];
+    const links = graph?.links || [];
+    const sources = nodes.filter((n) => String(n.type).toLowerCase() === 'source').length;
+    const sinks = nodes.filter((n) => String(n.type).toLowerCase() === 'sink').length;
+    return {
+      nodes: nodes.length,
+      edges: links.length,
+      sources,
+      sinks,
+    };
+  }, [graph]);
+
   useEffect(() => {
     if (graphRef.current) {
-      setTimeout(() => graphRef.current.zoomToFit(600, 80), 1400);
+      setTimeout(() => {
+        try {
+          graphRef.current.zoomToFit(600, 80);
+        } catch (_) {}
+      }, 1400);
     }
   }, [graph]);
 
-  // Per-path zoom: fires whenever bumpZoom() is called from the query panel
   const zoomTrigger = useStore((state) => state.zoomTrigger);
   useEffect(() => {
     if (!zoomTrigger || !graphRef.current || !path.length) return;
 
-    // Force-graph mutates x/y/z directly on the node objects in the store,
-    // so we can read positions straight from the Zustand graph nodes.
     const storeNodes = useStore.getState().graph.nodes;
     const pathNodes  = path
       .map((id) => storeNodes.find((n) => n.id === id))
       .filter((n) => n && n.x != null);
 
     if (!pathNodes.length) {
-      graphRef.current.zoomToFit(600, 60);
+      try {
+        graphRef.current.zoomToFit(600, 60);
+      } catch (_) {}
       return;
     }
 
@@ -199,70 +372,92 @@ const GraphCanvas = ({ onNodeClick }) => {
     const cy  = avg(pathNodes.map((n) => n.y ?? 0));
     const cz  = avg(pathNodes.map((n) => n.z ?? 0));
 
-    // Fly camera to look at the centroid from a slight angle
     graphRef.current.cameraPosition(
-      { x: cx, y: cy - 40, z: cz + 180 },  // camera eye
-      { x: cx, y: cy,      z: cz },         // look-at target
-      700                                    // transition ms
+      { x: cx, y: cy - 40, z: cz + 180 },
+      { x: cx, y: cy,      z: cz },
+      700
     );
   }, [zoomTrigger, path]);
+
+  animatedObjectsRef.current = [];
 
   return (
     <div
       className="graph-canvas"
       ref={containerRef}
-      style={{ position: "relative", width: "100%", height: "100%" }}
+      style={{ position: "relative", width: "100%", height: "100%", background: "#050811" }}
     >
-      <ForceGraph3D
-        ref={graphRef}
-        width={size.width}
-        height={size.height}
-        graphData={graph}
+      {/* ── 3D VIEW ───────────────────────────────────────────────────────── */}
+      {viewMode === '3d' && (
+        <>
+          <ThreatNebulaHUD stats={stats} />
+          
+          <div style={{ position: "absolute", top: 16, right: 16, zIndex: 30 }}>
+            <ViewToggle mode={viewMode} onChange={setViewMode} />
+          </div>
 
-        // ── Node rendering ──────────────────────────────────────────────────
-        nodeLabel={(node) =>
-          `${node.label || node.id} · ${node.type || "node"} · line ${node.line || "?"}`
-        }
-        nodeThreeObject={(node) =>
-          buildNodeObject(node, pathNodeSet.has(node.id))
-        }
-        nodeThreeObjectExtend={false}  // our group IS the whole object
-        onNodeClick={(node) => onNodeClick(node)}
+          <ForceGraph3D
+            ref={graphRef}
+            width={size.width}
+            height={size.height}
+            graphData={graph}
 
-        // ── Node size (used by force engine for collision) ──────────────────
-        nodeVal={(node) => getNodeSize(node) / 2}
+            nodeLabel={(node) =>
+              `${node.label || node.id} · ${node.type || "node"} · line ${node.line || "?"}`
+            }
+            nodeThreeObject={(node) =>
+              buildNodeObject(node, pathNodeSet.has(node.id), animatedObjectsRef)
+            }
+            nodeThreeObjectExtend={false}
+            onNodeClick={(node) => onNodeClick(node)}
+            nodeVal={(node) => getNodeSize(node) / 2}
 
-        // ── Edge rendering ──────────────────────────────────────────────────
-        linkWidth={(link) => {
-          const s = link.source?.id || link.source;
-          const t = link.target?.id || link.target;
-          return pathEdgeSet.has(`${s}->${t}`) ? 3.5 : 1;
-        }}
-        linkColor={(link) => {
-          const s = link.source?.id || link.source;
-          const t = link.target?.id || link.target;
-          return getEdgeColor(link, pathEdgeSet.has(`${s}->${t}`));
-        }}
-        linkOpacity={0.7}
+            linkCurvature={0.12}
+            linkWidth={(link) => {
+              const s = link.source?.id || link.source;
+              const t = link.target?.id || link.target;
+              return pathEdgeSet.has(`${s}->${t}`) ? 3.5 : 1.2;
+            }}
+            linkColor={(link) => {
+              const s = link.source?.id || link.source;
+              const t = link.target?.id || link.target;
+              const isOnPath = pathEdgeSet.has(`${s}->${t}`);
+              if (link.patched) return '#374151';
+              if (isOnPath || link.on_attack_path) return 'rgba(239, 68, 68, 0.95)';
+              return 'rgba(6, 182, 212, 0.35)';
+            }}
+            linkOpacity={0.85}
 
-        // ── Directional particles (attack path animation) ───────────────────
-        linkDirectionalParticles={(link) => {
-          const s = link.source?.id || link.source;
-          const t = link.target?.id || link.target;
-          return pathEdgeSet.has(`${s}->${t}`) ? 5 : 0;
-        }}
-        linkDirectionalParticleWidth={2.5}
-        linkDirectionalParticleColor={() => "#ef4444"}
-        linkDirectionalArrowLength={4}
-        linkDirectionalArrowRelPos={1}
+            linkDirectionalParticles={(link) => {
+              const s = link.source?.id || link.source;
+              const t = link.target?.id || link.target;
+              return pathEdgeSet.has(`${s}->${t}`) ? 6 : 0;
+            }}
+            linkDirectionalParticleWidth={3.0}
+            linkDirectionalParticleColor={() => "#F59E0B"}
+            linkDirectionalArrowLength={4.5}
+            linkDirectionalArrowRelPos={1}
 
-        // ── Scene ───────────────────────────────────────────────────────────
-        backgroundColor="#080c14"
-        showNavInfo={false}
-        cooldownTicks={120}
-      />
+            backgroundColor="#050811"
+            showNavInfo={false}
+            cooldownTicks={120}
+          />
 
-      <GraphLegend />
+          <LegendHUD />
+          <ControlsHintHUD />
+        </>
+      )}
+
+      {/* ── 2D SCHEMATIC VIEW ────────────────────────────────────────────── */}
+      {viewMode === '2d' && (
+        <SchematicView
+          graph={graph}
+          path={path}
+          onNodeClick={onNodeClick}
+          viewMode={viewMode}
+          setViewMode={setViewMode}
+        />
+      )}
     </div>
   );
 };

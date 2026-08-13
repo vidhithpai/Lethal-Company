@@ -98,17 +98,24 @@ def build_java_graph(project_path: str) -> nx.DiGraph:
                     nid = _node_id(filepath, line, node_type, name, root=root)
                     if nid in g:
                         continue
-                    g.add_node(
-                        nid,
-                        id=nid,
-                        type=node_type,
-                        file=filepath,
-                        line=line,
-                        label=f"{name}()",
-                        risk_score=RISK_SCORES.get(node_type, 1.0),
-                        risk="high" if node_type == "sink" else "low",
-                        patched=False,
-                    )
+                    attrs = {
+                        "id": nid,
+                        "type": node_type,
+                        "file": filepath,
+                        "line": line,
+                        "label": f"{name}()",
+                        "risk_score": RISK_SCORES.get(node_type, 1.0),
+                        "risk": "high" if node_type == "sink" else "low",
+                        "patched": False,
+                    }
+                    if node_type == "sink":
+                        attrs["cwe"] = item.get("cwe")
+                        attrs["cwe_name"] = item.get("cwe_name")
+                        attrs["sink_kind"] = item.get("sink_kind")
+                        attrs["severity"] = item.get("severity", 8.0)
+                        attrs["taint_confirmed"] = False  # Static regex match in Java pipeline
+
+                    g.add_node(nid, **attrs)
 
     for filepath, methods in file_methods.items():
         method_names = list(methods.keys())

@@ -260,41 +260,79 @@ def _is_source_expr(node: ast.AST) -> tuple[bool, str]:
     return False, ""
 
 
-def _is_sink_call(call: ast.Call) -> tuple[bool, str, float]:
-    qn = _qualname(call.func)
+CWE_MAP: dict[str, dict[str, str]] = {
+    "eval_exec": {"cwe": "CWE-95", "cwe_name": "Code Injection ('Eval Injection')"},
+    "cmd_execution": {"cwe": "CWE-78", "cwe_name": "OS Command Injection"},
+    "sql_execution": {"cwe": "CWE-89", "cwe_name": "SQL Injection"},
+    "deserialization": {"cwe": "CWE-502", "cwe_name": "Deserialization of Untrusted Data"},
+    "file_write": {"cwe": "CWE-22", "cwe_name": "Path Traversal / Unsafe File Write"},
+    "ssrf": {"cwe": "CWE-918", "cwe_name": "Server-Side Request Forgery (SSRF)"},
+    "ssti": {"cwe": "CWE-1336", "cwe_name": "Server-Side Template Injection (SSTI)"},
+}
+
+
+def _is_sink_call(call: ast.Call) -> tuple[bool, str, float, str, dict[str, Any]]:
+    qn = _qualname(call.func) or ""
 
     if isinstance(call.func, ast.Name) and call.func.id in {"eval", "exec"}:
-        return True, f"{call.func.id}(...)", 10.0
+        return True, f"{call.func.id}(...)", 10.0, "eval_exec", {}
+
+    if qn in {"render_template_string", "jinja2.render_template_string", "flask.render_template_string"}:
+        return True, f"{qn}(...)", 9.5, "ssti", {}
 
     if qn in {"pickle.loads", "pickle.load"}:
-        return True, f"{qn}(...)", 9.5
+        return True, f"{qn}(...)", 9.5, "deserialization", {}
 
-    if qn in {"yaml.load"}:
-        return True, "yaml.load(...)", 8.5
+    if qn in {"yaml.load", "yaml.unsafe_load"}:
+        safe_loader = False
+        for kw in call.keywords:
+            if kw.arg == "Loader":
+                l_qn = _qualname(kw.value) or (kw.value.id if isinstance(kw.value, ast.Name) else "")
+                if any(s in l_qn for s in ("SafeLoader", "FullLoader", "CSafeLoader")):
+                    safe_loader = True
+        if not safe_loader:
+            return True, f"{qn}(...)", 8.5, "deserialization", {}
 
     if qn in {"os.system"}:
-        return True, "os.system(...)", 9.0
+        return True, "os.system(...)", 9.0, "cmd_execution", {}
 
-    if qn and qn.startswith("subprocess.") and qn.split(".", 1)[1] in {
+    if qn.startswith("subprocess.") and qn.split(".", 1)[1] in {
         "run", "Popen", "call", "check_call", "check_output",
     }:
-        return True, f"{qn}(...)", 9.0
+        shell_kw = next((kw for kw in call.keywords if kw.arg == "shell"), None)
+        if shell_kw is not None:
+            val = shell_kw.value
+            if isinstance(val, ast.Constant) and isinstance(val.value, bool):
+                if val.value is True:
+                    return True, f"{qn}(shell=True)", 9.0, "cmd_execution", {}
+                else:
+                    return True, f"{qn}(shell=False)", 5.0, "cmd_execution", {}
+            return True, f"{qn}(shell=dynamic)", 7.0, "cmd_execution", {"shell_arg_static": False}
+        else:
+            return True, f"{qn}(shell=False)", 5.0, "cmd_execution", {}
+
+    if qn in {
+        "requests.get", "requests.post", "requests.put", "requests.delete", "requests.patch", "requests.request",
+        "httpx.get", "httpx.post", "httpx.put", "httpx.delete", "httpx.request",
+        "urllib.request.urlopen"
+    }:
+        return True, f"{qn}(...)", 7.5, "ssrf", {}
 
     if qn in {"shutil.rmtree", "shutil.move"}:
-        return True, f"{qn}(...)", 7.5
+        return True, f"{qn}(...)", 7.5, "file_write", {}
 
-    if qn and qn.endswith(".execute"):
+    if qn.endswith(".execute"):
         if len(call.args) >= 2:
-            return True, f"{qn}(...) [parameterized]", 3.0
-        return True, f"{qn}(...)", 8.0
+            return True, f"{qn}(...) [parameterized]", 3.0, "sql_execution", {}
+        return True, f"{qn}(...)", 8.0, "sql_execution", {}
 
     if _is_write_mode_call(call):
-        return True, "open(..., 'w')", 6.0
+        return True, "open(..., 'w')", 6.0, "file_write", {}
 
     if qn in {"pathlib.Path.write_text", "pathlib.Path.write_bytes"}:
-        return True, f"{qn}(...)", 6.0
+        return True, f"{qn}(...)", 6.0, "file_write", {}
 
-    return False, "", 0.0
+    return False, "", 0.0, "", {}
 
 
 def _is_sanitizer_call(call: ast.Call) -> bool:
@@ -376,9 +414,16 @@ class _TaintVisitor(ast.NodeVisitor):
             attrs["source_kind"] = kind
         elif kind and ntype == "sink":
             attrs["sink_kind"] = kind
+            cwe_info = CWE_MAP.get(kind)
+            if cwe_info:
+                attrs["cwe"] = cwe_info["cwe"]
+                attrs["cwe_name"] = cwe_info["cwe_name"]
+            else:
+                attrs["cwe"] = None
+                attrs["cwe_name"] = None
         self.g.add_node(node_id, **attrs)
 
-    def _expr_to_node(self, expr: ast.AST, *, fallback_label: str, ntype: str) -> str:
+    def _expr_to_node(self, expr: ast.AST, *, fallback_label: str, ntype: str, sink_kind: str = "") -> str:
         lineno = getattr(expr, "lineno", 1)
         col = getattr(expr, "col_offset", 0)
         label = _qualname(expr) or fallback_label
@@ -389,7 +434,7 @@ class _TaintVisitor(ast.NodeVisitor):
         self._node_counts[base_id] = count + 1
         nid = f"{base_id}[{count}]" if count > 0 else base_id
 
-        kind = ""
+        kind = sink_kind
         if ntype == "source":
             lbl = label.lower()
             if any(x in lbl for x in ["request", "body", "query", "path", "form", "header", "cookie"]):
@@ -401,17 +446,22 @@ class _TaintVisitor(ast.NodeVisitor):
             else:
                 kind = "cli_input"
         elif ntype == "sink":
-            lbl = label.lower()
-            if "execute" in lbl:
-                kind = "sql_execution"
-            elif "subprocess" in lbl or "os.system" in lbl:
-                kind = "cmd_execution"
-            elif "write" in lbl or "open" in lbl or "rmtree" in lbl or "move" in lbl:
-                kind = "file_write"
-            elif "pickle" in lbl or "yaml" in lbl:
-                kind = "deserialization"
-            elif "eval" in lbl or "exec" in lbl:
-                kind = "eval_exec"
+            if not kind:
+                lbl = label.lower()
+                if "execute" in lbl:
+                    kind = "sql_execution"
+                elif "subprocess" in lbl or "os.system" in lbl:
+                    kind = "cmd_execution"
+                elif "write" in lbl or "open" in lbl or "rmtree" in lbl or "move" in lbl:
+                    kind = "file_write"
+                elif "pickle" in lbl or "yaml" in lbl:
+                    kind = "deserialization"
+                elif "eval" in lbl or "exec" in lbl:
+                    kind = "eval_exec"
+                elif "requests" in lbl or "httpx" in lbl or "urlopen" in lbl:
+                    kind = "ssrf"
+                elif "template" in lbl:
+                    kind = "ssti"
 
         self._add_node(nid, ntype=ntype, label=label, lineno=lineno, col=col, kind=kind)
         return nid
@@ -488,20 +538,56 @@ class _TaintVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> Any:
-        is_sink, label, sev = _is_sink_call(node)
+        is_sink, label, sev, sink_kind, extra_attrs = _is_sink_call(node)
         if is_sink:
-            sink_id = self._expr_to_node(node, fallback_label=label, ntype="sink")
+            sink_id = self._expr_to_node(node, fallback_label=label, ntype="sink", sink_kind=sink_kind)
+
+            has_tainted_arg = False
+            origins: list[str] = []
+
+            for arg in node.args:
+                t, o = self._taint_of_expr(arg)
+                if t:
+                    has_tainted_arg = True
+                    origins.extend(o)
+
+            for kw in node.keywords:
+                t, o = self._taint_of_expr(kw.value)
+                if t:
+                    has_tainted_arg = True
+                    origins.extend(o)
+
+            if sev >= 9.0:
+                base_risk = "critical"
+            elif sev >= 7.0:
+                base_risk = "high"
+            elif sev >= 4.0:
+                base_risk = "medium"
+            else:
+                base_risk = "low"
+
+            if has_tainted_arg:
+                taint_confirmed = True
+                final_risk = base_risk
+            else:
+                taint_confirmed = False
+                downgrade_map = {
+                    "critical": "high",
+                    "high": "medium",
+                    "medium": "low",
+                    "low": "low",
+                }
+                final_risk = downgrade_map.get(base_risk, "low")
+
             weight = _severity_to_weight(sev)
             self.g.nodes[sink_id]["severity"] = sev
             self.g.nodes[sink_id]["weight"] = weight
-            if sev >= 9.0:
-                self.g.nodes[sink_id]["risk"] = "critical"
-            elif sev >= 7.0:
-                self.g.nodes[sink_id]["risk"] = "high"
-            elif sev >= 4.0:
-                self.g.nodes[sink_id]["risk"] = "medium"
-            else:
-                self.g.nodes[sink_id]["risk"] = "low"
+            self.g.nodes[sink_id]["risk"] = final_risk
+            self.g.nodes[sink_id]["taint_confirmed"] = taint_confirmed
+
+            for k, v in extra_attrs.items():
+                self.g.nodes[sink_id][k] = v
+
             self.sinks.add(sink_id)
 
             if self.current_function:
@@ -512,11 +598,9 @@ class _TaintVisitor(ast.NodeVisitor):
                 )
                 self.g.add_edge(fn, sink_id, type="call", reason="sink_in_function", weight=weight)
 
-            for arg in node.args:
-                t, origins = self._taint_of_expr(arg)
-                if t:
-                    for o in origins:
-                        self.g.add_edge(o, sink_id, type="dataflow", reason="tainted_arg", weight=weight)
+            if has_tainted_arg:
+                for o in origins:
+                    self.g.add_edge(o, sink_id, type="dataflow", reason="tainted_arg", weight=weight)
 
         if _is_sanitizer_call(node):
             san_id = self._expr_to_node(node, fallback_label="sanitizer()", ntype="sanitizer")
