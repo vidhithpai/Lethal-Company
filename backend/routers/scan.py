@@ -45,11 +45,34 @@ def scan(req: ScanRequest):
     if p.is_file():
         p = p.parent
 
+    # Docker path resolution fallback: if host path is not directly accessible inside Linux container
     if not p.exists() or not p.is_dir():
-        raise HTTPException(
-            status_code=400,
-            detail=f"project_path must be an existing directory: {p}",
-        )
+        norm_path = project_path.replace("\\", "/")
+        folder_name = Path(norm_path).name
+        cwd = Path.cwd().resolve()
+
+        # 1. Check if folder_name exists under CWD (e.g. /app/demo_project, /app/sample_project)
+        candidate = cwd / folder_name
+        if candidate.exists() and candidate.is_dir():
+            p = candidate
+        elif cwd.name == folder_name:
+            p = cwd
+        else:
+            # 2. Check for matching subpath relative to CWD
+            matched = None
+            parts = [pt for pt in norm_path.split("/") if pt and ":" not in pt]
+            for i in range(len(parts)):
+                sub = cwd.joinpath(*parts[i:])
+                if sub.exists() and sub.is_dir():
+                    matched = sub
+                    break
+            if matched:
+                p = matched
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"project_path must be an existing directory: {p}",
+                )
 
     # Trigger a fresh scan (Java or Python pipeline)
     language = detect_project_language(str(p))
