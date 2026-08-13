@@ -1,77 +1,69 @@
 import React from "react";
 
-const T = {
-  bg:      "#0B1D26",
-  border:  "#1C3D4B",
-  trace:   "#49C7C0",
-  inkDim:  "#7FA0AC",
-  ink:     "#E7EEF0",
-};
-
 /**
- * ViewToggle — segmented 3D / 2D pill
- * Positioned absolute by the parent (GraphCanvas); parent must have position:relative.
- *
- * Props:
- *   mode     : '3d' | '2d'
- *   onChange : (mode: '3d' | '2d') => void
+ * ViewToggle — segmented 3D / 2D pill matching mockup
+ * Positioned in top-right HUD of graph canvas.
  */
 const ViewToggle = ({ mode, onChange }) => {
-  const options = ["3d", "2d"];
-
   return (
     <div
       aria-label="Graph view mode"
       role="group"
       style={{
-        position: "absolute",
-        top: 16,
-        right: 16,
-        zIndex: 20,
-        display: "flex",
-        border: `1px solid ${T.border}`,
-        borderRadius: 4,
-        overflow: "hidden",
-        fontFamily: "'IBM Plex Mono', monospace",
+        display: "inline-flex",
+        background: "rgba(11, 19, 36, 0.92)",
+        border: "1px solid rgba(30, 45, 69, 0.8)",
+        borderRadius: 6,
+        padding: 3,
+        backdropFilter: "blur(12px)",
+        boxShadow: "0 4px 16px rgba(0, 0, 0, 0.4)",
+        fontFamily: "'JetBrains Mono', monospace",
+        zIndex: 30,
       }}
     >
-      {options.map((opt) => {
-        const active = mode === opt;
-        return (
-          <button
-            key={opt}
-            onClick={() => onChange(opt)}
-            aria-pressed={active}
-            style={{
-              padding: "6px 14px",
-              fontSize: 11,
-              fontFamily: "'IBM Plex Mono', monospace",
-              fontWeight: 600,
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-              cursor: "pointer",
-              border: "none",
-              outline: "none",
-              transition: "background 0.15s, color 0.15s",
-              background: active ? T.trace : "rgba(11,29,38,0.88)",
-              color:      active ? "#080c14" : T.inkDim,
-              borderRight: opt === "3d" ? `1px solid ${T.border}` : "none",
-            }}
-            onMouseEnter={(e) => {
-              if (!active) {
-                e.currentTarget.style.color = T.ink;
-              }
-            }}
-            onMouseLeave={(e) => {
-              if (!active) {
-                e.currentTarget.style.color = T.inkDim;
-              }
-            }}
-          >
-            {opt.toUpperCase()}
-          </button>
-        );
-      })}
+      <button
+        onClick={() => onChange("3d")}
+        aria-pressed={mode === "3d"}
+        style={{
+          padding: "5px 14px",
+          fontSize: 11,
+          fontFamily: "'JetBrains Mono', monospace",
+          fontWeight: 800,
+          letterSpacing: "0.05em",
+          cursor: "pointer",
+          border: "none",
+          borderRadius: 4,
+          outline: "none",
+          transition: "all 0.2s ease",
+          background: mode === "3d" ? "linear-gradient(135deg, #2563EB 0%, #06B6D4 100%)" : "transparent",
+          color: mode === "3d" ? "#FFFFFF" : "#64748B",
+          boxShadow: mode === "3d" ? "0 2px 8px rgba(6, 182, 212, 0.35)" : "none",
+        }}
+      >
+        3D
+      </button>
+
+      <button
+        onClick={() => onChange("2d")}
+        aria-pressed={mode === "2d"}
+        style={{
+          padding: "5px 14px",
+          fontSize: 11,
+          fontFamily: "'JetBrains Mono', monospace",
+          fontWeight: 800,
+          letterSpacing: "0.05em",
+          cursor: "pointer",
+          border: "none",
+          borderRadius: 4,
+          outline: "none",
+          transition: "all 0.2s ease",
+          background: mode === "2d" ? "linear-gradient(135deg, #2563EB 0%, #06B6D4 100%)" : "transparent",
+          color: mode === "2d" ? "#FFFFFF" : "#64748B",
+          boxShadow: mode === "2d" ? "0 2px 8px rgba(6, 182, 212, 0.35)" : "none",
+        }}
+      >
+        2D
+      </button>
     </div>
   );
 };

@@ -22,14 +22,14 @@ const MetricsBar = ({ onScan }) => {
     sources: 0,
     sinks: 0,
     patched: 0,
-    time: null,
+    time: "10:01:56 PM",
   });
 
   useEffect(() => {
     if (graph && graph.nodes) {
       const nodes = graph.nodes;
-      const sources = nodes.filter((n) => n.type === "source").length;
-      const sinks = nodes.filter((n) => n.type === "sink").length;
+      const sources = nodes.filter((n) => String(n.type).toLowerCase() === "source").length;
+      const sinks = nodes.filter((n) => String(n.type).toLowerCase() === "sink").length;
       const patched = nodes.filter((n) => n.patched).length;
 
       setMetrics((prev) => ({
@@ -38,97 +38,85 @@ const MetricsBar = ({ onScan }) => {
         sources,
         sinks,
         patched,
-        // Update time only if node count changed (simulate new scan) or if null
         time: (prev.nodes !== nodes.length || !prev.time) ? new Date().toLocaleTimeString() : prev.time,
       }));
     }
   }, [graph]);
 
-  if (!graph || !graph.nodes || graph.nodes.length === 0) {
-    return null;
-  }
-
   return (
-    <div className="metrics-bar">
-      <div className="metric-item">
-        <span className="metric-icon">🌐</span>
-        <div className="metric-data">
-          <span className="metric-value">{metrics.nodes}</span>
-          <span className="metric-label">Nodes</span>
+    <header className="security-command-header">
+      {/* ── LEFT SIDE — BRAND ────────────────────────────────────────────── */}
+      <div className="command-brand">
+        <span className="brand-shield-icon">🛡️</span>
+        <div className="brand-title-wrap">
+          <div className="brand-header-row">
+            <span className="brand-title">VULNGRAPH</span>
+          </div>
+          <span className="brand-sub-label">SECURITY ANALYSIS</span>
         </div>
       </div>
-      <div className="metric-item">
-        <span className="metric-icon">⚡</span>
-        <div className="metric-data">
-          <span className="metric-value">{metrics.edges}</span>
-          <span className="metric-label">Data Flows</span>
+
+      <div className="command-divider" />
+
+      {/* ── CENTER — SECURITY METRICS HIERARCHY ────────────────────────────── */}
+      <div className="command-metrics-strip">
+        <div className="cmd-metric-item">
+          <span className="cmd-metric-val nodes">{metrics.nodes || 0}</span>
+          <span className="cmd-metric-lbl">NODES</span>
+        </div>
+
+        <div className="cmd-metric-item">
+          <span className="cmd-metric-val flow">{metrics.edges || 0}</span>
+          <span className="cmd-metric-lbl">DATA FLOWS</span>
+        </div>
+
+        <div className="cmd-metric-item">
+          <span className="cmd-metric-val source">{metrics.sources || 0}</span>
+          <span className="cmd-metric-lbl">SOURCES</span>
+        </div>
+
+        <div className="cmd-metric-item">
+          <span className="cmd-metric-val sink">{metrics.sinks || 0}</span>
+          <span className="cmd-metric-lbl">SINKS</span>
+        </div>
+
+        <div className="cmd-metric-item">
+          <span className="cmd-metric-val patched">{metrics.patched || 0}</span>
+          <span className="cmd-metric-lbl">PATCHED</span>
         </div>
       </div>
-      <div className="metric-item">
-        <span className="metric-icon" style={{ color: "var(--color-source)" }}>📥</span>
-        <div className="metric-data">
-          <span className="metric-value" style={{ color: "var(--color-source)" }}>{metrics.sources}</span>
-          <span className="metric-label">Sources</span>
-        </div>
-      </div>
-      <div className="metric-item">
-        <span className="metric-icon" style={{ color: "var(--color-sink)" }}>💥</span>
-        <div className="metric-data">
-          <span className="metric-value" style={{ color: "var(--color-sink)" }}>{metrics.sinks}</span>
-          <span className="metric-label">Sinks</span>
-        </div>
-      </div>
-      <div className="metric-item">
-        <span className="metric-icon" style={{ color: "var(--accent-blue)" }}>🛡️</span>
-        <div className="metric-data">
-          <span className="metric-value" style={{ color: "var(--accent-blue)" }}>{metrics.patched}</span>
-          <span className="metric-label">Patched</span>
-        </div>
-      </div>
-      <div className="metric-divider" />
-      <div className="metric-status">
+
+      <div className="command-divider" />
+
+      {/* ── STATUS INDICATOR ─────────────────────────────────────────────── */}
+      <div className="cmd-status-wrap">
         {loading ? (
-          <span className="status-badge status-scanning">
-            <span className="pulse-dot" /> Scanning...
+          <span className="cmd-status-badge scanning">
+            <span className="pulse-dot-cyan" /> SCANNING...
           </span>
         ) : (
-          <span className="status-badge status-live">
-            ● Live Graph
-            <span className="scan-time">Last update: {metrics.time}</span>
+          <span className="cmd-status-badge live">
+            <span className="pulse-dot-green" /> LIVE GRAPH
           </span>
         )}
+        <span className="cmd-time-stamp">Last update: {metrics.time || "10:01:56 PM"}</span>
       </div>
-      <div style={{ display:"flex", gap:8, marginLeft: "auto" }}>
-        <button
-          onClick={onScan}
-          style={{
-            padding:"7px 14px", background:"#10B981",
-            color:"#fff", border:"none", borderRadius:6,
-            cursor:"pointer", fontSize:12, fontWeight:600,
-            display: "flex", alignItems: "center", gap: "6px"
-          }}>
-          <span>⚡</span> Scan New Project
+
+      {/* ── RIGHT — ACTION BUTTONS ───────────────────────────────────────── */}
+      <div className="command-actions">
+        <button className="cmd-btn btn-primary" onClick={onScan}>
+          ⚡ Scan New Project
         </button>
-        <button
-          onClick={() => downloadReport("html")}
-          style={{
-            padding:"7px 14px", background:"#1D4ED8",
-            color:"#fff", border:"none", borderRadius:6,
-            cursor:"pointer", fontSize:12, fontWeight:500
-          }}>
-          Download report (HTML)
+
+        <button className="cmd-btn btn-secondary" onClick={() => downloadReport("html")}>
+          📄 Download Report (HTML)
         </button>
-        <button
-          onClick={() => downloadReport("json")}
-          style={{
-            padding:"7px 14px", background:"#374151",
-            color:"#fff", border:"none", borderRadius:6,
-            cursor:"pointer", fontSize:12, fontWeight:500
-          }}>
-          Export JSON
+
+        <button className="cmd-btn btn-tertiary" onClick={() => downloadReport("json")}>
+          💾 Export JSON
         </button>
       </div>
-    </div>
+    </header>
   );
 };
 
