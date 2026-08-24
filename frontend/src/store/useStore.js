@@ -39,6 +39,17 @@ const useStore = create((set, get) => ({
   // GraphCanvas watches this; every increment fires a zoomToFit()
   zoomTrigger: 0,
   bumpZoom: () => set({ zoomTrigger: get().zoomTrigger + 1 }),
+
+  // ── Differential / Commit state ───────────────────────────────────────────
+  diffMode: false,
+  selectedCommit: null,
+  commitTimeline: [],
+  newPaths: [],
+
+  setDiffMode: (v) => set({ diffMode: v }),
+  setSelectedCommit: (c) => set({ selectedCommit: c }),
+  setCommitTimeline: (t) => set({ commitTimeline: t }),
+  setNewPaths: (p) => set({ newPaths: p }),
 }));
 
 export default useStore;
