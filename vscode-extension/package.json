@@ -2,7 +2,7 @@
   "name": "vulngraph",
   "displayName": "VulnGraph Security Analyzer",
   "description": "Real-time ENTRY/SINK/GUARD detection with local analysis",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "vulngraph-dev",
   "scripts": {
     "vscode:prepublish": "npm run compile",

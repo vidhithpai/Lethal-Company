@@ -105,32 +105,37 @@ const ControlsHintHUD = () => (
 );
 
 // ─── Animated 3D Node Object Builder ──────────────────────────────────────────
-function buildNodeObject(node, isOnPath, animatedObjectsRef) {
+function buildNodeObject(node, isOnPath, animatedObjectsRef, diffMode, isDiffNode) {
   const group = new THREE.Group();
   const nodeType = String(node.type || '').toLowerCase();
   const radius = getNodeSize(node) / 2;
-  const color = getNodeColor(node);
+  
+  let color = getNodeColor(node);
+  if (diffMode && isDiffNode) {
+    color = "#FF4444";
+  }
 
+  const coreOpacity = diffMode ? (isDiffNode ? 1.0 : 0.2) : (node.patched ? 0.4 : 0.95);
   let coreMesh;
 
   if (nodeType === "source") {
     const geo = new THREE.IcosahedronGeometry(radius, 0);
     const mat = new THREE.MeshPhongMaterial({
       color,
-      emissive: '#059669',
+      emissive: diffMode && isDiffNode ? '#FF4444' : '#059669',
       emissiveIntensity: 0.6,
       shininess: 80,
       transparent: true,
-      opacity: node.patched ? 0.4 : 0.95,
+      opacity: coreOpacity,
     });
     coreMesh = new THREE.Mesh(geo, mat);
 
     const shellGeo = new THREE.IcosahedronGeometry(radius + 1.8, 1);
     const shellMat = new THREE.MeshBasicMaterial({
-      color: '#10B981',
+      color: diffMode && isDiffNode ? '#FF4444' : '#10B981',
       wireframe: true,
       transparent: true,
-      opacity: 0.35,
+      opacity: diffMode ? (isDiffNode ? 0.5 : 0.05) : 0.35,
     });
     const shell = new THREE.Mesh(shellGeo, shellMat);
     group.add(shell);
@@ -139,12 +144,12 @@ function buildNodeObject(node, isOnPath, animatedObjectsRef) {
   } else if (nodeType === "sink") {
     const geo = new THREE.DodecahedronGeometry(radius, 0);
     const mat = new THREE.MeshPhongMaterial({
-      color: '#EF4444',
+      color: diffMode && isDiffNode ? '#FF4444' : '#EF4444',
       emissive: '#DC2626',
       emissiveIntensity: 0.7,
       shininess: 100,
       transparent: true,
-      opacity: node.patched ? 0.4 : 0.95,
+      opacity: coreOpacity,
     });
     coreMesh = new THREE.Mesh(geo, mat);
 
@@ -154,7 +159,7 @@ function buildNodeObject(node, isOnPath, animatedObjectsRef) {
       color: '#EF4444',
       wireframe: true,
       transparent: true,
-      opacity: isHighRisk ? 0.45 : 0.25,
+      opacity: diffMode ? (isDiffNode ? 0.5 : 0.05) : (isHighRisk ? 0.45 : 0.25),
     });
     const shell = new THREE.Mesh(shellGeo, shellMat);
     group.add(shell);
@@ -164,28 +169,28 @@ function buildNodeObject(node, isOnPath, animatedObjectsRef) {
     const auraMat = new THREE.MeshLambertMaterial({
       color: '#DC2626',
       transparent: true,
-      opacity: isHighRisk ? 0.22 : 0.1,
+      opacity: diffMode ? (isDiffNode ? 0.3 : 0.02) : (isHighRisk ? 0.22 : 0.1),
     });
     group.add(new THREE.Mesh(auraGeo, auraMat));
 
   } else if (nodeType === "sanitizer") {
     const geo = new THREE.OctahedronGeometry(radius, 0);
     const mat = new THREE.MeshPhongMaterial({
-      color: '#8B5CF6',
+      color,
       emissive: '#6D28D9',
       emissiveIntensity: 0.5,
       shininess: 60,
       transparent: true,
-      opacity: node.patched ? 0.4 : 0.9,
+      opacity: coreOpacity,
     });
     coreMesh = new THREE.Mesh(geo, mat);
 
     const shellGeo = new THREE.OctahedronGeometry(radius + 1.8, 0);
     const shellMat = new THREE.MeshBasicMaterial({
-      color: '#8B5CF6',
+      color,
       wireframe: true,
       transparent: true,
-      opacity: 0.4,
+      opacity: diffMode ? (isDiffNode ? 0.5 : 0.05) : 0.4,
     });
     const shell = new THREE.Mesh(shellGeo, shellMat);
     group.add(shell);
@@ -194,11 +199,11 @@ function buildNodeObject(node, isOnPath, animatedObjectsRef) {
   } else if (nodeType === "intermediate") {
     const geo = new THREE.OctahedronGeometry(radius, 0);
     const mat = new THREE.MeshPhongMaterial({
-      color: '#F59E0B',
+      color,
       emissive: '#D97706',
       emissiveIntensity: 0.4,
       transparent: true,
-      opacity: node.patched ? 0.4 : 0.9,
+      opacity: coreOpacity,
     });
     coreMesh = new THREE.Mesh(geo, mat);
 
@@ -210,7 +215,7 @@ function buildNodeObject(node, isOnPath, animatedObjectsRef) {
       emissiveIntensity: isOnPath ? 0.6 : 0.2,
       shininess: 40,
       transparent: true,
-      opacity: node.patched ? 0.35 : 0.8,
+      opacity: coreOpacity,
     });
     coreMesh = new THREE.Mesh(geo, mat);
   }
@@ -220,7 +225,18 @@ function buildNodeObject(node, isOnPath, animatedObjectsRef) {
   group.userData.nodeType = nodeType;
   group.userData.isOnPath = isOnPath;
 
-  if (isOnPath && !node.patched) {
+  if (diffMode && isDiffNode) {
+    const redGlowGeo = new THREE.SphereGeometry(radius + 3.5, 16, 16);
+    const redGlowMat = new THREE.MeshBasicMaterial({
+      color: '#FF4444',
+      wireframe: true,
+      transparent: true,
+      opacity: 0.8,
+    });
+    const redGlow = new THREE.Mesh(redGlowGeo, redGlowMat);
+    group.add(redGlow);
+    group.userData.redGlow = redGlow;
+  } else if (isOnPath && !node.patched) {
     const pathGlowGeo = new THREE.SphereGeometry(radius + 3.0, 16, 16);
     const pathGlowMat = new THREE.MeshBasicMaterial({
       color: nodeType === "sink" ? '#EF4444' : (nodeType === "source" ? '#10B981' : '#F59E0B'),
@@ -242,8 +258,12 @@ function buildNodeObject(node, isOnPath, animatedObjectsRef) {
   else if (nodeType === "intermediate") tagSuffix = "\nINT";
 
   const sprite = new SpriteText(displayLabel + tagSuffix);
-  sprite.color = node.patched ? "#64748B" : (isOnPath ? "#FFFFFF" : (nodeType === "sink" ? "#EF4444" : (nodeType === "source" ? "#10B981" : "#94A3B8")));
-  sprite.textHeight = isOnPath ? 3.4 : (nodeType === 'normal' ? 2.0 : 2.6);
+  if (diffMode) {
+    sprite.color = isDiffNode ? "#FF4444" : "#334155";
+  } else {
+    sprite.color = node.patched ? "#64748B" : (isOnPath ? "#FFFFFF" : (nodeType === "sink" ? "#EF4444" : (nodeType === "source" ? "#10B981" : "#94A3B8")));
+  }
+  sprite.textHeight = (isOnPath || (diffMode && isDiffNode)) ? 3.4 : (nodeType === 'normal' ? 2.0 : 2.6);
   sprite.fontFace = "JetBrains Mono, monospace";
   sprite.position.set(0, radius + 4.5, 0);
   group.add(sprite);
@@ -259,11 +279,39 @@ function buildNodeObject(node, isOnPath, animatedObjectsRef) {
 const GraphCanvas = ({ onNodeClick }) => {
   const graph        = useStore((state) => state.graph);
   const path         = useStore((state) => state.path);
+  const diffMode     = useStore((state) => state.diffMode);
+  const newPaths     = useStore((state) => state.newPaths);
   const containerRef = useRef(null);
   const graphRef     = useRef(null);
   const [size, setSize] = useState({ width: 800, height: 600 });
   const [viewMode, setViewMode] = useState('3d');
   const animatedObjectsRef = useRef([]);
+
+  const diffNodeSet = useMemo(() => {
+    if (!diffMode || !newPaths) return new Set();
+    const set = new Set();
+    for (const pathArr of newPaths) {
+      if (Array.isArray(pathArr)) {
+        for (const id of pathArr) {
+          set.add(id);
+        }
+      }
+    }
+    return set;
+  }, [diffMode, newPaths]);
+
+  const diffLinkSet = useMemo(() => {
+    if (!diffMode || !newPaths) return new Set();
+    const set = new Set();
+    for (const pathArr of newPaths) {
+      if (Array.isArray(pathArr)) {
+        for (let i = 0; i < pathArr.length - 1; i++) {
+          set.add(`${pathArr[i]}->${pathArr[i + 1]}`);
+        }
+      }
+    }
+    return set;
+  }, [diffMode, newPaths]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -305,6 +353,11 @@ const GraphCanvas = ({ onNodeClick }) => {
         if (grp.userData.pathGlow) {
           const glowPulse = 1 + Math.sin(clock * 3.5 + i) * 0.12;
           grp.userData.pathGlow.scale.set(glowPulse, glowPulse, glowPulse);
+        }
+
+        if (grp.userData.redGlow) {
+          const glowPulse = 1 + Math.sin(clock * 4.0 + i) * 0.15;
+          grp.userData.redGlow.scale.set(glowPulse, glowPulse, glowPulse);
         }
       }
       animId = requestAnimationFrame(animate);
@@ -406,7 +459,7 @@ const GraphCanvas = ({ onNodeClick }) => {
               `${node.label || node.id} · ${node.type || "node"} · line ${node.line || "?"}`
             }
             nodeThreeObject={(node) =>
-              buildNodeObject(node, pathNodeSet.has(node.id), animatedObjectsRef)
+              buildNodeObject(node, pathNodeSet.has(node.id), animatedObjectsRef, diffMode, diffNodeSet.has(node.id))
             }
             nodeThreeObjectExtend={false}
             onNodeClick={(node) => onNodeClick(node)}
@@ -416,25 +469,44 @@ const GraphCanvas = ({ onNodeClick }) => {
             linkWidth={(link) => {
               const s = link.source?.id || link.source;
               const t = link.target?.id || link.target;
+              if (diffMode) {
+                return diffLinkSet.has(`${s}->${t}`) ? 3 : 1.2;
+              }
               return pathEdgeSet.has(`${s}->${t}`) ? 3.5 : 1.2;
             }}
             linkColor={(link) => {
               const s = link.source?.id || link.source;
               const t = link.target?.id || link.target;
+              if (diffMode) {
+                return diffLinkSet.has(`${s}->${t}`) ? '#FF4444' : 'rgba(255, 255, 255, 0.1)';
+              }
               const isOnPath = pathEdgeSet.has(`${s}->${t}`);
               if (link.patched) return '#374151';
               if (isOnPath || link.on_attack_path) return 'rgba(239, 68, 68, 0.95)';
               return 'rgba(6, 182, 212, 0.35)';
             }}
-            linkOpacity={0.85}
+            linkOpacity={(link) => {
+              if (diffMode) {
+                const s = link.source?.id || link.source;
+                const t = link.target?.id || link.target;
+                return diffLinkSet.has(`${s}->${t}`) ? 1.0 : 0.1;
+              }
+              return 0.85;
+            }}
 
             linkDirectionalParticles={(link) => {
               const s = link.source?.id || link.source;
               const t = link.target?.id || link.target;
+              if (diffMode) {
+                return diffLinkSet.has(`${s}->${t}`) ? 6 : 0;
+              }
               return pathEdgeSet.has(`${s}->${t}`) ? 6 : 0;
             }}
             linkDirectionalParticleWidth={3.0}
-            linkDirectionalParticleColor={() => "#F59E0B"}
+            linkDirectionalParticleColor={(link) => {
+              if (diffMode) return "#FF4444";
+              return "#F59E0B";
+            }}
             linkDirectionalArrowLength={4.5}
             linkDirectionalArrowRelPos={1}
 

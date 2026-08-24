@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 import git
@@ -22,6 +23,104 @@ class DifferentialEngine:
         if len(commits) < 2:
             return []
         return [(commits[i + 1].hexsha, commits[i].hexsha) for i in range(len(commits) - 1)]
+
+    def get_diff_changed_files(self, parent_hash: str, commit_hash: str) -> list[str]:
+        """
+        Uses git diff to get only the files changed between parent and commit.
+        Returns list of absolute file paths that were added or modified.
+        """
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--name-only", "--diff-filter=AM",
+                 parent_hash, commit_hash],
+                capture_output=True, text=True, cwd=self.repo_path, check=True
+            )
+            changed = [f.strip() for f in result.stdout.strip().splitlines() if f.strip()]
+            return [str(Path(self.repo_path) / f) for f in changed]
+        except subprocess.CalledProcessError:
+            return []
+
+    def get_diff_hunks(self, parent_hash: str, commit_hash: str) -> dict[str, str]:
+        """
+        Returns {filepath: unified_diff_text} for all changed files.
+        This is the raw git diff output per file — used to identify
+        which methods were added or modified in the commit.
+        """
+        try:
+            result = subprocess.run(
+                ["git", "diff", "-U3", parent_hash, commit_hash],
+                capture_output=True, text=True, errors="replace", cwd=self.repo_path
+            )
+            diffs = {}
+            current_file = None
+            current_lines = []
+            for line in result.stdout.splitlines():
+                if line.startswith("diff --git"):
+                    if current_file:
+                        diffs[current_file] = "\n".join(current_lines)
+                    current_file = None
+                    current_lines = []
+                elif line.startswith("+++ b/"):
+                    current_file = line[6:].strip()
+                    current_lines = []
+                elif current_file:
+                    current_lines.append(line)
+            if current_file:
+                diffs[current_file] = "\n".join(current_lines)
+            return diffs
+        except Exception:
+            return {}
+
+    def build_graph_scoped_to_diff(
+        self, commit_hash: str, changed_files: list[str]
+    ) -> nx.DiGraph:
+        """
+        Builds a graph for ONLY the changed files at commit_hash.
+        Checks out those specific files into a temp dir, analyzes them,
+        and returns a partial graph. Much faster than full clone.
+        """
+        if not changed_files:
+            return nx.DiGraph()
+
+        if commit_hash in self._graph_cache:
+            return self._graph_cache[commit_hash]
+
+        tmp_dir = tempfile.mkdtemp(prefix="tdra_diff_")
+        try:
+            for rel_path in changed_files:
+                # Get the relative path from repo root
+                try:
+                    rel = str(Path(rel_path).relative_to(self.repo_path))
+                except ValueError:
+                    rel = Path(rel_path).name
+
+                out_path = Path(tmp_dir) / rel
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+
+                try:
+                    res = subprocess.run(
+                        ["git", "show", f"{commit_hash}:{rel}"],
+                        capture_output=True,
+                        cwd=self.repo_path, check=True
+                    )
+                    content = res.stdout.decode("utf-8", errors="replace")
+                    out_path.write_text(content, encoding="utf-8", errors="replace")
+                except subprocess.CalledProcessError:
+                    continue  # file may not exist at this commit
+
+            from .code_security_graph import build_graph_for_path
+            from .java_graph_builder import build_java_graph
+
+            java_files = list(Path(tmp_dir).rglob("*.java"))
+            if java_files:
+                G = build_java_graph(tmp_dir)
+            else:
+                G = build_graph_for_path(tmp_dir)
+
+            self._graph_cache[commit_hash] = G
+            return G
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def build_graph_at_commit(self, commit_hash: str) -> nx.DiGraph:
         """
@@ -82,59 +181,120 @@ class DifferentialEngine:
         return result
 
     def analyze_commit(self, parent_hash: str, commit_hash: str) -> dict:
-        """Core TDRA differential analysis for one commit."""
-        G_prev = self.build_graph_at_commit(parent_hash)
-        G_curr = self.build_graph_at_commit(commit_hash)
+        """
+        Core TDRA differential analysis.
+        Uses git diff to scope analysis to changed files only.
+        Falls back to full clone if diff is empty.
+        """
+        # Get changed files via git diff
+        changed_files = self.get_diff_changed_files(parent_hash, commit_hash)
+        diff_hunks = self.get_diff_hunks(parent_hash, commit_hash)
+        
+        if changed_files:
+            # Fast path: build graph only for changed files at each version
+            # For parent: get the PARENT version of changed files
+            parent_tmp = tempfile.mkdtemp(prefix="tdra_parent_")
+            curr_tmp = tempfile.mkdtemp(prefix="tdra_curr_")
+            try:
+                # Extract changed files at parent commit
+                parent_changed = []
+                curr_changed = []
+                for rel_path in changed_files:
+                    try:
+                        rel = str(Path(rel_path).relative_to(self.repo_path))
+                    except ValueError:
+                        rel = Path(rel_path).name
+                    
+                    # Parent version
+                    p_out = Path(parent_tmp) / rel
+                    p_out.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        p_res = subprocess.run(
+                            ["git", "show", f"{parent_hash}:{rel}"],
+                            capture_output=True,
+                            cwd=self.repo_path, check=True
+                        )
+                        p_content = p_res.stdout.decode("utf-8", errors="replace")
+                        p_out.write_text(p_content, encoding="utf-8", errors="replace")
+                        parent_changed.append(str(p_out))
+                    except subprocess.CalledProcessError:
+                        pass  # new file, doesn't exist in parent
+
+                    # Current version
+                    c_out = Path(curr_tmp) / rel
+                    c_out.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        c_res = subprocess.run(
+                            ["git", "show", f"{commit_hash}:{rel}"],
+                            capture_output=True,
+                            cwd=self.repo_path, check=True
+                        )
+                        c_content = c_res.stdout.decode("utf-8", errors="replace")
+                        c_out.write_text(c_content, encoding="utf-8", errors="replace")
+                        curr_changed.append(str(c_out))
+                    except subprocess.CalledProcessError:
+                        pass
+
+                from .code_security_graph import build_graph_for_path
+                from .java_graph_builder import build_java_graph
+
+                def build(tmp):
+                    jf = list(Path(tmp).rglob("*.java"))
+                    return build_java_graph(tmp) if jf else build_graph_for_path(tmp)
+
+                G_prev = build(parent_tmp) if parent_changed else nx.DiGraph()
+                G_curr = build(curr_tmp) if curr_changed else nx.DiGraph()
+            finally:
+                shutil.rmtree(parent_tmp, ignore_errors=True)
+                shutil.rmtree(curr_tmp, ignore_errors=True)
+        else:
+            # Fallback to original full-clone approach
+            G_prev = self.build_graph_at_commit(parent_hash)
+            G_curr = self.build_graph_at_commit(commit_hash)
 
         R_prev = self.get_reachability_set(G_prev)
         R_curr = self.get_reachability_set(G_curr)
         guards_prev = self.get_guard_set(G_prev, R_prev)
         guards_curr = self.get_guard_set(G_curr, R_curr)
 
-        # New attack paths introduced by this commit
         new_paths = R_curr - R_prev
-
-        # Guard weakening: paths in both versions with fewer guards in curr
         shared_paths = R_prev & R_curr
-        guard_weakening = [p for p in shared_paths if guards_curr.get(p, 0) < guards_prev.get(p, 0)]
+        guard_weakening = [p for p in shared_paths 
+                           if guards_curr.get(p, 0) < guards_prev.get(p, 0)]
 
-        # RF formula: alpha=0.6, beta=0.4
         alpha, beta = 0.6, 0.4
         p_before = max(len(R_prev), 1)
         g_before = max(sum(guards_prev.values()), 1)
-        delta_paths = len(new_paths)
-        delta_guards = len(guard_weakening)
-
         RF = round(
-            alpha * (delta_paths / p_before) +
-            beta * (delta_guards / g_before),
-            4
+            alpha * (len(new_paths) / p_before) +
+            beta * (len(guard_weakening) / g_before), 4
         )
-        RF = min(RF, 1.0)  # clamp to [0,1]
+        RF = min(RF, 1.0)
 
-        # Severity classification
-        if RF < 0.2:
-            severity = "Low"
-        elif RF < 0.45:
-            severity = "Medium"
-        elif RF < 0.7:
-            severity = "High"
-        else:
-            severity = "Critical"
+        if RF < 0.2: severity = "Low"
+        elif RF < 0.45: severity = "Medium"
+        elif RF < 0.7: severity = "High"
+        else: severity = "Critical"
 
         commit_obj = self.repo.commit(commit_hash)
-
         return {
             "commit_hash": commit_hash,
             "parent_hash": parent_hash,
             "author": commit_obj.author.name,
             "date": commit_obj.authored_datetime.isoformat(),
             "message": commit_obj.message.strip(),
-            "new_attack_paths": delta_paths,
-            "guard_weakening_events": delta_guards,
+            "changed_files": [Path(f).name for f in changed_files],
+            "diff_lines_changed": sum(
+                len([l for l in d.splitlines() if l.startswith(("+", "-")) 
+                     and not l.startswith(("---", "+++"))])
+                for d in diff_hunks.values()
+            ),
+            "new_attack_paths": len(new_paths),
+            "guard_weakening_events": len(guard_weakening),
             "paths_before": len(R_prev),
             "paths_after": len(R_curr),
             "risk_factor": RF,
             "severity": severity,
             "new_paths_detail": [list(p)[:8] for p in list(new_paths)[:5]],
+            "analysis_method": "git_diff_scoped" if changed_files else "full_clone",
         }

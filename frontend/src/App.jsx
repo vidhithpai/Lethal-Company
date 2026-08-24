@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import GraphCanvas from "./components/canvas/GraphCanvas";
 import MetricsBar from "./components/metrics/MetricsBar";
 import UnifiedPanel from "./components/panel/UnifiedPanel";
+import CommitTimeline from "./components/panel/CommitTimeline";
 import { endpoints, normalizeGraph } from "./services/api";
 import useStore from "./store/useStore";
 
@@ -17,6 +18,7 @@ const App = () => {
   const setPath = useStore((state) => state.setPath);
   const patchNodeLocal = useStore((state) => state.patchNodeLocal);
   
+  const [repoPath, setRepoPath] = useState("./demo_project");
   const [highlightedPathIndex, setHighlightedPathIndex] = useState(null);
   const [attackPaths, setAttackPaths] = useState([]);
   const fileInputRef = useRef(null);
@@ -84,6 +86,7 @@ const App = () => {
     const formData = new FormData();
     const folderName = files[0].webkitRelativePath ? files[0].webkitRelativePath.split('/')[0] : "uploaded_project";
     formData.append("folder_name", folderName);
+    setRepoPath(folderName);
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
@@ -127,37 +130,40 @@ const App = () => {
   };
 
   return (
-    <div className="app-root" style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
-      <input 
-        type="file" 
-        webkitdirectory="true" 
-        directory="true" 
-        multiple 
-        ref={fileInputRef} 
-        style={{ display: "none" }} 
-        onChange={handleFileUpload} 
-      />
-      <MetricsBar onScan={handleScanNewProject} />
-      <div className="main-layout" style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        <div className="graph-wrap" style={{ flex: 1 }}>
-          <GraphCanvas onNodeClick={setSelectedNode} />
-        </div>
-        <div style={{ width: "30%", minWidth: "300px", height: "100%" }}>
-          <UnifiedPanel
-            selectedNode={selectedNode}
-            attackPath={attackPath}
-            attackPaths={attackPaths}
-            onPatch={handlePatch}
-            onHighlightPath={(idx) => {
-              setHighlightedPathIndex(idx);
-            }}
-            onSelectNode={(nodeId) => {
-              const node = graph?.nodes?.find(n => n.id === nodeId);
-              if (node) setSelectedNode(node);
-            }}
-          />
+    <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        <input 
+          type="file" 
+          webkitdirectory="true" 
+          directory="true" 
+          multiple 
+          ref={fileInputRef} 
+          style={{ display: "none" }} 
+          onChange={handleFileUpload} 
+        />
+        <MetricsBar onScan={handleScanNewProject} />
+        <div className="main-layout" style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+          <div className="graph-wrap" style={{ flex: 1 }}>
+            <GraphCanvas onNodeClick={setSelectedNode} />
+          </div>
+          <div style={{ width: "30%", minWidth: "300px", height: "100%" }}>
+            <UnifiedPanel
+              selectedNode={selectedNode}
+              attackPath={attackPath}
+              attackPaths={attackPaths}
+              onPatch={handlePatch}
+              onHighlightPath={(idx) => {
+                setHighlightedPathIndex(idx);
+              }}
+              onSelectNode={(nodeId) => {
+                const node = graph?.nodes?.find(n => n.id === nodeId);
+                if (node) setSelectedNode(node);
+              }}
+            />
+          </div>
         </div>
       </div>
+      <CommitTimeline repoPath={repoPath} />
     </div>
   );
 };

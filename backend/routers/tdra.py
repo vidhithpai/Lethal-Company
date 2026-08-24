@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from backend.services.differential_engine import DifferentialEngine
+from backend.services.statistical_validator import validate_risk_scores as _validate
 
 router = APIRouter(tags=["tdra"])
 
@@ -29,6 +30,12 @@ _CACHE_TTL_SECONDS = 300  # 5 minutes
 class TDRAAnalyzeRequest(BaseModel):
     repo_path: str
     limit: int = 20
+
+
+class ValidationRequest(BaseModel):
+    repo_path: str
+    known_vcc_hashes: list[str]
+    limit: int = 100
 
 
 def _get_analyzed_commit_results(repo_path: str, limit: int) -> tuple[list[dict[str, Any]], DifferentialEngine]:
@@ -68,6 +75,29 @@ def analyze_repo(req: TDRAAnalyzeRequest):
         return {"results": sorted_results, "total_pairs_analyzed": len(sorted_results)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"TDRA analysis failed: {str(e)}")
+
+
+@router.post("/validate")
+def run_validation(req: ValidationRequest):
+    """
+    POST /api/tdra/validate
+    Splits commit RF scores into VCC vs non-VCC groups
+    using provided known CVE commit hashes, then runs
+    Mann-Whitney U + Cliff's delta.
+    """
+    try:
+        results, _ = _get_analyzed_commit_results(req.repo_path, req.limit)
+        vcc_scores = [r["risk_factor"] for r in results 
+                      if r["commit_hash"] in req.known_vcc_hashes
+                      or r["commit_hash"][:7] in req.known_vcc_hashes]
+        non_vcc_scores = [r["risk_factor"] for r in results
+                          if r["commit_hash"] not in req.known_vcc_hashes
+                          and r["commit_hash"][:7] not in req.known_vcc_hashes]
+        report = _validate(vcc_scores, non_vcc_scores)
+        report["total_commits_analyzed"] = len(results)
+        return report
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/risk-summary")
