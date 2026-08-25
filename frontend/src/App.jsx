@@ -106,10 +106,15 @@ const App = () => {
       });
       
       if (res.ok) {
+        const scanRes = await res.json();
+        const scannedPath = scanRes.project_path || folderName;
+        console.log("[Scan] Actual scanned project_path:", scannedPath);
+        setRepoPath(scannedPath);
+
         const graphRes = await fetch(endpoints.graph);
         const graphPayload = await graphRes.json();
         setGraph(normalizeGraph(graphPayload));
-        setExplanation(`Upload and scan complete.`);
+        setExplanation(`Upload and scan complete for ${scannedPath}.`);
         
         fetch(endpoints.attackPaths)
           .then(r => r.json())

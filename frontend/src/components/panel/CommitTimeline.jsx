@@ -1,5 +1,6 @@
 import React from "react";
 import useStore from "../../store/useStore";
+import { API_BASE } from "../../config";
 
 const RF_COLOR = (rf) => {
   if (rf >= 0.7) return { bg: "#3D1212", border: "#FF4444", text: "#FF4444" };
@@ -23,15 +24,22 @@ export default function CommitTimeline({ repoPath }) {
   const setSelectedCommit = useStore((s) => s.setSelectedCommit);
   const setNewPaths = useStore((s) => s.setNewPaths);
   const selectedCommit = useStore((s) => s.selectedCommit);
+  const [timelineSource, setTimelineSource] = React.useState("git_analysis");
 
-  // Load timeline on mount
+  // Load timeline when repoPath changes or mounts
   React.useEffect(() => {
     if (!repoPath) return;
-    fetch(`/api/tdra/timeline?repo_path=${encodeURIComponent(repoPath)}&limit=50`)
-      .then(r => r.json())
-      .then(d => setCommitTimeline(d.timeline || []))
-      .catch(() => {});
-  }, [repoPath]);
+    fetch(`${API_BASE}/api/tdra/timeline?repo_path=${encodeURIComponent(repoPath)}&limit=50`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d) => {
+        setCommitTimeline(d.timeline || []);
+        setTimelineSource(d.source || "git_analysis");
+      })
+      .catch((err) => console.error("[CommitTimeline] Fetch failed:", err));
+  }, [repoPath, setCommitTimeline]);
 
   const handleSelectCommit = async (commit) => {
     setSelectedCommit(commit);
@@ -64,6 +72,16 @@ export default function CommitTimeline({ repoPath }) {
           </button>
         )}
       </div>
+
+      {(timelineSource === "mock" || timelineSource === "fallback_mock") && (
+        <div style={{
+          padding: "8px 14px", background: "#3D2A0A",
+          borderBottom: "1px solid #FF9500", fontSize: 11,
+          color: "#FF9500"
+        }}>
+          ⚠ Demo data — no git history found at this path
+        </div>
+      )}
 
       {/* Commits */}
       <div style={{ flex: 1, overflowY: "auto" }}>
