@@ -9,6 +9,7 @@ from typing import Any, Iterable
 
 import networkx as nx
 
+from .guard_attenuation import compute_path_residual_risk
 
 @dataclass(frozen=True)
 class SecurityGraphConfig:
@@ -421,6 +422,11 @@ class _TaintVisitor(ast.NodeVisitor):
             else:
                 attrs["cwe"] = None
                 attrs["cwe_name"] = None
+
+        if ntype in ("sanitizer", "guard"):
+            attrs["guard_basis"] = "annotation" if "@" in label else "name"
+            attrs["annotations"] = []
+
         self.g.add_node(node_id, **attrs)
 
     def _expr_to_node(self, expr: ast.AST, *, fallback_label: str, ntype: str, sink_kind: str = "") -> str:
@@ -766,8 +772,10 @@ def find_attack_paths(G, sources, sinks, max_depth=15):
                 for path in nx.all_simple_paths(G, src, sink, cutoff=max_depth):
                     guards = [n for n in path
                               if G.nodes[n].get('type') in ('sanitizer', 'guard')]
-                    guard_density = len(guards) / max(len(path), 1)
-                    risk = round(1 - guard_density, 4)
+                    
+                    attenuation_result = compute_path_residual_risk(path, G, sink)
+                    risk = attenuation_result["residual_risk"]
+                    guard_density = attenuation_result["effective_guard_strength"]
 
                     sink_scores = [
                         float(G.nodes[n].get("risk_score", 9.0))
@@ -793,6 +801,11 @@ def find_attack_paths(G, sources, sinks, max_depth=15):
                         "guard_density": guard_density,
                         "risk": risk,
                         "rf_contribution": rf_contribution,
+                        "residual_risk": attenuation_result["residual_risk"],
+                        "effective_guard_strength": attenuation_result["effective_guard_strength"],
+                        "guard_attenuations": attenuation_result["guard_attenuations"],
+                        "cwe": attenuation_result["cwe"],
+                        "sink_category": attenuation_result["sink_category"],
                     })
             except nx.NetworkXNoPath:
                 continue

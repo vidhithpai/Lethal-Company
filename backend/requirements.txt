@@ -8,3 +8,4 @@ groq
 gitpython
 numpy
 scipy
+javalang>=0.13.0
