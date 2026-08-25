@@ -7,6 +7,11 @@ from pathlib import Path
 import git
 import networkx as nx
 
+from .guard_attenuation import (
+    compute_path_residual_risk,
+    compute_delta_attenuation,
+)
+
 
 class DifferentialEngine:
     def __init__(self, repo_path: str):
@@ -171,13 +176,16 @@ class DifferentialEngine:
                     continue
         return paths
 
-    def get_guard_set(self, G: nx.DiGraph, reachability: set[tuple]) -> dict[tuple, int]:
-        """Returns {path_tuple: guard_count} for all paths."""
+    def get_guard_set(self, G: nx.DiGraph, reachability: set[tuple]) -> dict[tuple, float]:
+        """
+        Returns {path_tuple: effective_guard_strength}.
+        """
         result = {}
         for path in reachability:
-            node_set = set(path)
-            guards = sum(1 for n in node_set if G.nodes.get(n, {}).get("type") == "sanitizer")
-            result[path] = guards
+            path_nodes = list(path)
+            sink_id = path_nodes[-1] if path_nodes else None
+            analysis = compute_path_residual_risk(path_nodes, G, sink_id or "")
+            result[path] = analysis["effective_guard_strength"]
         return result
 
     def analyze_commit(self, parent_hash: str, commit_hash: str) -> dict:
@@ -259,15 +267,32 @@ class DifferentialEngine:
 
         new_paths = R_curr - R_prev
         shared_paths = R_prev & R_curr
-        guard_weakening = [p for p in shared_paths 
-                           if guards_curr.get(p, 0) < guards_prev.get(p, 0)]
+        
+        guard_weakening = []
+        total_attenuation_drop = 0.0
+
+        for path in shared_paths:
+            A_prev = guards_prev.get(path, 0.0)
+            A_curr = guards_curr.get(path, 0.0)
+            drop = A_prev - A_curr
+            if drop > 0.05:  # threshold: >5% effective guard strength lost
+                guard_weakening.append(path)
+                total_attenuation_drop += drop
 
         alpha, beta = 0.6, 0.4
         p_before = max(len(R_prev), 1)
-        g_before = max(sum(guards_prev.values()), 1)
+        
+        path_expansion_score = len(new_paths) / p_before
+        
+        # Guard component: weighted by magnitude of attenuation drop
+        # If no prior guards, attenuation drop is 0
+        total_prior_attenuation = max(sum(guards_prev.values()), 0.01)
+        guard_regression_score = total_attenuation_drop / total_prior_attenuation
+
         RF = round(
-            alpha * (len(new_paths) / p_before) +
-            beta * (len(guard_weakening) / g_before), 4
+            alpha * min(path_expansion_score, 1.0) +
+            beta  * min(guard_regression_score, 1.0),
+            4
         )
         RF = min(RF, 1.0)
 
@@ -291,9 +316,12 @@ class DifferentialEngine:
             ),
             "new_attack_paths": len(new_paths),
             "guard_weakening_events": len(guard_weakening),
+            "total_attenuation_drop": round(total_attenuation_drop, 4),
+            "guard_regression_score": round(guard_regression_score, 4),
+            "path_expansion_score": round(path_expansion_score, 4),
             "paths_before": len(R_prev),
             "paths_after": len(R_curr),
-            "risk_factor": RF,
+            "rf_score": RF,
             "severity": severity,
             "new_paths_detail": [list(p)[:8] for p in list(new_paths)[:5]],
             "analysis_method": "git_diff_scoped" if changed_files else "full_clone",

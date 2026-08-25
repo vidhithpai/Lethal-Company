@@ -72,10 +72,100 @@ def _read_file_methods(filepath: str) -> dict[str, str]:
 
     return methods
 
+def build_symbol_table(project_path: str) -> dict[str, str]:
+    """
+    Scans all .java files in project_path and builds a global map of:
+    {method_name: node_id, ClassName.methodName: node_id}
+    
+    This allows cross-file call resolution — when file A calls 
+    userService.save(), we can find the node id of UserService.save()
+    in another file and add the edge.
+    
+    Returns: {symbol: node_id} where symbol is:
+      - "ClassName.methodName" (preferred, unambiguous)
+      - "methodName" (fallback, may have collisions)
+    """
+    symbol_table = {}
+    java_files = list(Path(project_path).rglob("*.java"))
+    
+    for jf in java_files:
+        try:
+            source = jf.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        
+        # Extract class name from file
+        class_match = re.search(
+            r'\b(?:public\s+)?(?:class|interface|enum)\s+(\w+)', source
+        )
+        class_name = class_match.group(1) if class_match else jf.stem
+        
+        # Extract all method definitions
+        method_pattern = re.compile(
+            r'(?:public|protected|private|static|\s)+[\w<>\[\]]+\s+'
+            r'(\w+)\s*\([^)]*\)\s*(?:throws\s+[\w,\s]+)?\s*\{',
+            re.MULTILINE
+        )
+        for m in method_pattern.finditer(source):
+            method_name = m.group(1)
+            if method_name in ('if', 'for', 'while', 'switch', 'catch'):
+                continue
+            
+            # Determine node type for this method
+            node_type = _classify_java_method(method_name, source, 
+                                               m.start(), class_name)
+            
+            # Build node_id same format as build_java_graph uses
+            line_no = source[:m.start()].count('\n') + 1
+            node_id = _node_id(str(jf), line_no, node_type, method_name, root=project_path)
+            
+            # Register under multiple lookup keys
+            symbol_table[f"{class_name}.{method_name}"] = node_id
+            symbol_table[method_name] = node_id  # fallback
+            
+    return symbol_table
+
+
+def _classify_java_method(method_name: str, source: str, 
+                           pos: int, class_name: str) -> str:
+    """Classify a method as source/sink/sanitizer/normal."""
+    # Check annotations on the 3 lines before the method
+    before = source[max(0, pos-300):pos]
+    
+    ENTRY_ANNOTATIONS = {'@RequestMapping','@GetMapping','@PostMapping',
+                         '@PutMapping','@DeleteMapping','@PatchMapping',
+                         '@MessageMapping','@KafkaListener','@RabbitListener'}
+    SINK_PATTERNS = {'execute','executeQuery','executeUpdate','exec',
+                     'invoke','write','send','publish','serialize',
+                     'createQuery','nativeQuery'}
+    GUARD_ANNOTATIONS = {'@Valid','@Validated','@NotNull','@NotBlank',
+                         '@Pattern','@Size','@Min','@Max'}
+    GUARD_NAMES = {'validate','sanitize','check','verify','escape',
+                   'filter','authorize','authenticate','isValid','hasPermission'}
+    
+    if any(ann in before for ann in ENTRY_ANNOTATIONS):
+        return 'source'
+    if any(ann in before for ann in GUARD_ANNOTATIONS):
+        return 'sanitizer'
+    if any(method_name.lower().startswith(g) for g in GUARD_NAMES):
+        return 'sanitizer'
+    if any(s in method_name.lower() for s in SINK_PATTERNS):
+        return 'sink'
+    return 'normal'
+
+
+
 
 def build_java_graph(project_path: str) -> nx.DiGraph:
     g = nx.DiGraph()
     root = Path(project_path).resolve()
+    java_files = list(Path(project_path).rglob("*.java"))
+    if not java_files:
+        return g
+    
+    # === PHASE 1: Build global symbol table ===
+    symbol_table = build_symbol_table(project_path)
+    
     file_methods: dict[str, dict[str, str]] = {}
     parsed_by_file: dict[str, dict[str, list[dict[str, Any]]]] = {}
 
@@ -85,6 +175,12 @@ def build_java_graph(project_path: str) -> nx.DiGraph:
             if not filename.endswith(".java"):
                 continue
             filepath = str((Path(dirpath) / filename).resolve())
+            
+            try:
+                source_text = Path(filepath).read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                source_text = ""
+
             parsed = parse_java_file(filepath)
             parsed_by_file[filepath] = parsed
             file_methods[filepath] = _read_file_methods(filepath)
@@ -114,6 +210,18 @@ def build_java_graph(project_path: str) -> nx.DiGraph:
                         attrs["sink_kind"] = item.get("sink_kind")
                         attrs["severity"] = item.get("severity", 8.0)
                         attrs["taint_confirmed"] = False  # Static regex match in Java pipeline
+
+                    if node_type in ("sanitizer", "guard"):
+                        lines = source_text.splitlines()
+                        start_idx = max(0, line - 6)
+                        before_text = "\n".join(lines[start_idx:line])
+                        GUARD_ANNOTATIONS = {"@Valid","@Validated","@NotNull","@NotBlank",
+                                             "@Pattern","@Size","@Min","@Max","@Positive",
+                                             "@PreAuthorize","@Secured","@RolesAllowed"}
+                        detected_annotations = [a for a in GUARD_ANNOTATIONS if a in before_text]
+                        has_annotation = len(detected_annotations) > 0
+                        attrs["guard_basis"] = "annotation" if has_annotation else "name"
+                        attrs["annotations"] = detected_annotations
 
                     g.add_node(nid, **attrs)
 
@@ -145,6 +253,72 @@ def build_java_graph(project_path: str) -> nx.DiGraph:
                                 reason="calls",
                                 weight=1.0,
                             )
+
+    # === PHASE 3: Add cross-file edges ===
+    # For each node in the graph, scan its source file for 
+    # method calls and resolve them against the symbol table
+    
+    for jf in java_files:
+        try:
+            source = jf.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        
+        # Find all method calls: patterns like  
+        # variableName.methodName( or ClassName.methodName(
+        call_pattern = re.compile(r'(\w+)\.(\w+)\s*\(')
+        
+        # Find which nodes belong to this file
+        file_nodes = [n for n in g.nodes() 
+                      if g.nodes[n].get('file','').endswith(jf.name)]
+        
+        for match in call_pattern.finditer(source):
+            obj_name = match.group(1)      # e.g. "userService"
+            called_method = match.group(2)  # e.g. "save"
+            call_line = source[:match.start()].count('\n') + 1
+            
+            # Find the caller node (the method that contains this call)
+            caller_node = None
+            best_line_dist = float('inf')
+            for fn in file_nodes:
+                node_line = g.nodes[fn].get('line', 0)
+                if node_line <= call_line:
+                    dist = call_line - node_line
+                    if dist < best_line_dist:
+                        best_line_dist = dist
+                        caller_node = fn
+            
+            if caller_node is None:
+                continue
+            
+            # Try to resolve the called method across all files
+            # Try "ClassName.method" first (check known class names)
+            target_node = None
+            
+            # Strategy 1: direct name match (e.g. save -> UserRepository.save)
+            if called_method in symbol_table:
+                target_node = symbol_table[called_method]
+            
+            # Strategy 2: look for ClassName.method where ClassName 
+            # matches the variable type (from field declarations)
+            # e.g. "private UserService userService" -> UserService.save
+            field_pattern = re.compile(
+                rf'(\w+)\s+{re.escape(obj_name)}\s*[;=,)]'
+            )
+            field_match = field_pattern.search(source)
+            if field_match:
+                inferred_class = field_match.group(1)
+                key = f"{inferred_class}.{called_method}"
+                if key in symbol_table:
+                    target_node = symbol_table[key]
+            
+            # Add cross-file edge if resolved and not self-loop
+            if target_node and target_node != caller_node:
+                if not g.has_edge(caller_node, target_node):
+                    g.add_edge(caller_node, target_node, 
+                               type='cross_file_call',
+                               reason='calls',
+                               call_line=call_line)
 
     return g
 
