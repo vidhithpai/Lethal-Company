@@ -17,67 +17,52 @@ def find_git_root(path: str) -> str | None:
     """Walk up directory tree to find .git folder, with fallback to original repo paths."""
     print(f"[GIT_CHECK] Checking repo_path: '{path}' for .git")
     p = Path(path).resolve()
-    
-    # 1. Direct check: walk up directory tree
-    for parent in [p] + list(p.parents):
+
+    # 1. Direct check on p itself (if p has its own .git)
+    if (p / ".git").exists():
+        print(f"[GIT_CHECK] Code path: REAL GIT BLAME (found direct repo at {p})")
+        return str(p)
+
+    # 2. Extract candidate project folder names from path parts (e.g. pygoat, timetable_management)
+    path_parts = [part for part in Path(path).parts if part and part not in ("/", "\\", "tmp", "vulngraph_uploads", "app")]
+    folder_names = list(dict.fromkeys([p.name] + path_parts[::-1]))
+
+    user_home = Path.home()
+    curr = Path.cwd()
+
+    for fname in folder_names:
+        if not fname or fname.endswith(".py") or fname.endswith(".java") or fname.endswith(".js"):
+            continue
+
+        candidates = [
+            curr / fname,
+            curr.parent / fname,
+            curr.parent / "Demorep" / fname,
+            curr.parent / "MajorProject" / "Demorep" / fname,
+            user_home / "Documents" / "Projects" / fname,
+            user_home / "Documents" / "Projects" / "Demorep" / fname,
+            user_home / "Documents" / "Projects" / "MajorProject" / "Demorep" / fname,
+            user_home / "Projects" / fname,
+            user_home / "Projects" / "Demorep" / fname,
+        ]
+
+        for cand in candidates:
+            try:
+                cand_resolved = cand.resolve()
+                dot_git = cand_resolved / ".git"
+                if cand_resolved.exists() and dot_git.exists():
+                    print(f"[GIT_CHECK] Found fallback repo matching '{fname}' with .git at '{cand_resolved}'")
+                    print(f"[GIT_CHECK] Code path: REAL GIT BLAME (fallback to original local path '{cand_resolved}')")
+                    return str(cand_resolved)
+            except Exception:
+                continue
+
+    # 3. Walk up parent directory tree as final fallback
+    for parent in list(p.parents):
         dot_git = parent / ".git"
         if dot_git.exists():
-            print(f"[GIT_CHECK] os.path.exists('{dot_git}') -> True")
-            print(f"[GIT_CHECK] Code path: REAL GIT BLAME (found direct repo at {parent})")
+            print(f"[GIT_CHECK] Code path: REAL GIT BLAME (found parent repo at {parent})")
             return str(parent)
-            
-    print(f"[GIT_CHECK] os.path.exists('{p / '.git'}') -> False")
-    
-    # DEMO-ENVIRONMENT WORKAROUND:
-    # This fallback lookup matches an uploaded project's folder name against local repositories
-    # on the host filesystem because web browser folder uploads (<input webkitdirectory>) exclude
-    # hidden .git directories. In a real deployed version, the upload flow itself should preserve .git
-    # (e.g. by using a file input that doesn't filter dotfiles, or requiring a git URL/clone instead of a folder upload)
-    # rather than relying on local path matching.
-    folder_name = p.name
-    candidates = [
-        Path.cwd() / folder_name,
-        Path.cwd().parent / folder_name,
-        Path.cwd().parent / "Demorep" / folder_name,
-    ]
-    
-    # Check user-configured search roots if provided via environment variable
-    search_root_env = os.environ.get("LOCAL_REPO_SEARCH_ROOT")
-    if search_root_env:
-        for root_path in search_root_env.split(os.pathsep):
-            sr = Path(root_path.strip()).expanduser()
-            candidates.extend([
-                sr / folder_name,
-                sr / "Demorep" / folder_name,
-            ])
-    else:
-        # Default user home search locations
-        user_home = Path.home()
-        candidates.extend([
-            user_home / "Documents" / "Projects" / folder_name,
-            user_home / "Documents" / "Projects" / "Demorep" / folder_name,
-            user_home / "Projects" / folder_name,
-            user_home / "Projects" / "Demorep" / folder_name,
-        ])
-    
-    # Search parent directories for matching folder with .git
-    curr = Path.cwd()
-    for _ in range(3):
-        if curr.parent != curr:
-            curr = curr.parent
-            candidates.append(curr / folder_name)
-            candidates.append(curr / "Demorep" / folder_name)
-            
-    for cand in candidates:
-        try:
-            cand_resolved = cand.resolve()
-            dot_git = cand_resolved / ".git"
-            if cand_resolved.exists() and dot_git.exists():
-                print(f"[GIT_CHECK] Found fallback repo matching '{folder_name}' with .git at '{cand_resolved}'")
-                print(f"[GIT_CHECK] Code path: REAL GIT BLAME (fallback to original local path '{cand_resolved}')")
-                return str(cand_resolved)
-        except Exception:
-            continue
 
     print(f"[GIT_CHECK] No .git folder found for '{path}' or its fallback candidates.")
     print(f"[GIT_CHECK] Code path: NO GIT HISTORY AVAILABLE")

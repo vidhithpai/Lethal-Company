@@ -225,6 +225,7 @@ async def scan_upload(
 
     return {
         "message": f"Uploaded and scanned: {base}",
+        "project_path": str(base),
         "language": language,
         "nodes": len(nodes),
         "edges": len(edges),

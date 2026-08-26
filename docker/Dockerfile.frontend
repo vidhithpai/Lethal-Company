@@ -14,7 +14,7 @@ COPY frontend/public/ ./public/
 
 # VITE_API_URL is set at build time so the browser knows where to call the API.
 # Default: localhost:8002 (browser → host-exposed port on any machine)
-ARG VITE_API_URL=http://localhost:8002
+ARG VITE_API_URL=http://localhost:8001
 ENV VITE_API_URL=$VITE_API_URL
 
 RUN npm run build

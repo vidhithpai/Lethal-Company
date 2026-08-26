@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 import networkx as nx
 
@@ -103,26 +104,59 @@ def read_communities():
 def read_node_context(node_id: str):
     built = get_security_graph()
     g = built["graph"]
-    if node_id not in g:
-        raise HTTPException(status_code=404, detail="Node not found")
-        
+    target_id = None
+
+    if node_id in g:
+        target_id = node_id
+    else:
+        # Normalize slashes and attempt fuzzy node lookup
+        norm_req = node_id.replace("\\", "/").strip()
+        for n in g.nodes:
+            norm_n = str(n).replace("\\", "/").strip()
+            if norm_n == norm_req or norm_n.endswith(norm_req) or norm_req.endswith(norm_n):
+                target_id = n
+                break
+
+    if not target_id:
+        # Second attempt: match by label or file base
+        for n, d in g.nodes(data=True):
+            if d.get("label") == node_id or d.get("id") == node_id:
+                target_id = n
+                break
+
+    if not target_id:
+        raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+
+    node_id = target_id
     node_data = dict(g.nodes[node_id])
-    
+    filepath = node_data.get("file")
+    line = node_data.get("line", 1)
+    context_code = ""
+
+    if filepath and Path(filepath).exists():
+        try:
+            lines = Path(filepath).read_text(errors="replace").splitlines()
+            start = max(0, line - 15)
+            end = min(len(lines), line + 15)
+            context_code = "\n".join(lines[start:end])
+        except Exception:
+            context_code = ""
+
     try:
         upstream_nodes = nx.ancestors(g, node_id)
         upstream_sources = [{"id": n, "label": g.nodes[n].get("label", n)} for n in upstream_nodes if g.nodes[n].get("type") == "source"]
     except Exception:
         upstream_sources = []
-        
+
     try:
         downstream_nodes = nx.descendants(g, node_id)
         downstream_sinks = [{"id": n, "label": g.nodes[n].get("label", n), "risk": g.nodes[n].get("risk", "LOW")} for n in downstream_nodes if g.nodes[n].get("type") == "sink"]
     except Exception:
         downstream_sinks = []
-        
+
     all_paths = compute_attack_paths(limit=500, max_depth=14)
     paths_through = [p for p in all_paths if node_id in p.get("path", [])]
-    
+
     blast_radius = node_data.get("blast_radius", {})
     if not isinstance(blast_radius, dict) and "files_in_commit" not in blast_radius:
         blist = node_data.get("blast_radius", [])
@@ -134,8 +168,13 @@ def read_node_context(node_id: str):
             }
         else:
             blast_radius = {"files_in_commit": [], "count": 0, "description": "No git blame data"}
-            
+
     return {
+        "node_id": node_id,
+        "type": node_data.get("type"),
+        "file": filepath,
+        "line": line,
+        "context_code": context_code,
         "node": node_data,
         "upstream": {
             "sources": upstream_sources,

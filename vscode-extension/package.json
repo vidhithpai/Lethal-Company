@@ -37,8 +37,8 @@
       "properties": {
         "vulngraph.backendUrl": {
           "type": "string",
-          "default": "http://localhost:8002",
-          "description": "VulnGraph backend URL (default: http://localhost:8002)"
+          "default": "http://localhost:8001",
+          "description": "VulnGraph backend URL (default: http://localhost:8001)"
         },
         "vulngraph.analyzeOnSave": {
           "type": "boolean",

@@ -1,0 +1,63 @@
+{
+  "name": "vulngraph",
+  "displayName": "VulnGraph Security Analyzer",
+  "description": "Commit-level TDRA security analysis — ENTRY/SINK/GUARD decorations, risk dashboard, statistical validation. All local.",
+  "version": "0.2.0",
+  "publisher": "vulngraph-dev",
+  "repository": { "type": "git", "url": "https://github.com/vulngraph/vulngraph" },
+  "scripts": {
+    "vscode:prepublish": "echo 'ready'",
+    "package": "vsce package --no-dependencies"
+  },
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Security", "Linters", "Other"],
+  "keywords": ["security", "sast", "vulnerability", "taint", "java", "python"],
+  "activationEvents": [
+    "onLanguage:python",
+    "onLanguage:java",
+    "onStartupFinished"
+  ],
+  "main": "./extension_full.js",
+  "contributes": {
+    "commands": [
+      { "command": "vulngraph.analyzeFile",      "title": "VulnGraph: Analyze Current File",        "icon": "$(shield)" },
+      { "command": "vulngraph.analyzeWorkspace",  "title": "VulnGraph: Analyze Workspace",           "icon": "$(search)" },
+      { "command": "vulngraph.openDashboard",     "title": "VulnGraph: Open Risk Dashboard",         "icon": "$(graph)" },
+      { "command": "vulngraph.exportReport",      "title": "VulnGraph: Export Security Report",      "icon": "$(cloud-download)" },
+      { "command": "vulngraph.runValidation",     "title": "VulnGraph: Run Statistical Validation",  "icon": "$(beaker)" }
+    ],
+    "menus": {
+      "editor/title": [
+        { "command": "vulngraph.openDashboard",  "group": "navigation", "when": "resourceLangId == python || resourceLangId == java" },
+        { "command": "vulngraph.exportReport",   "group": "navigation", "when": "resourceLangId == python || resourceLangId == java" }
+      ],
+      "editor/context": [
+        { "command": "vulngraph.analyzeFile",    "group": "vulngraph", "when": "resourceLangId == python || resourceLangId == java" },
+        { "command": "vulngraph.openDashboard",  "group": "vulngraph" }
+      ]
+    },
+    "configuration": {
+      "title": "VulnGraph",
+      "properties": {
+        "vulngraph.backendUrl": {
+          "type": "string",
+          "default": "http://localhost:8002",
+          "description": "VulnGraph backend URL. Default: local backend at port 8002."
+        },
+        "vulngraph.autoAnalyzeOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-analyze file on save (debounced 800ms)."
+        },
+        "vulngraph.showGuardDecorations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show GUARD node decorations on sanitizer methods."
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^2.22.0"
+  }
+}

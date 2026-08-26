@@ -32,3 +32,10 @@ def read_path(target: str):
 def select_mock_graph() -> dict[str, str]:
     use_mock_graph()
     return {"message": "Mock graph activated"}
+
+
+@router.get("/node/context")
+def get_node_context(node_id: str):
+    from backend.routers.security import read_node_context
+    return read_node_context(node_id=node_id)
+
