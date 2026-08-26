@@ -20,14 +20,14 @@
 ## Backend Requirements
 
 The extension communicates with the local VulnGraph FastAPI backend service:
-- Default URL: `http://localhost:8002`
-- Endpoints consumed:
-  - `POST /api/cve/scan` (Triggers workspace AST scan and returns source/sink counts)
-  - `GET /api/graph` (Retrieves full node graph for line decoration matching)
+- Default URL: `http://localhost:8001` (configurable via `vulngraph.backendUrl` setting)
+- The backend should expose:
+  - `POST /api/cve/scan`
+  - `GET /api/graph`
 
-Make sure the backend server is running locally:
+To start the backend locally:
 ```bash
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8002
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8001
 ```
 
 ---
@@ -38,7 +38,7 @@ You can customize extension behavior in VS Code Settings (`Ctrl+,` or `Cmd+,` ->
 
 | Setting | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `vulngraph.backendUrl` | `string` | `http://localhost:8002` | URL of the local VulnGraph backend server |
+| `vulngraph.backendUrl` | `string` | `http://localhost:8001` | URL of the local VulnGraph backend server |
 | `vulngraph.analyzeOnSave` | `boolean` | `true` | Automatically re-analyze supported files on save (1500ms debounce) |
 
 ---

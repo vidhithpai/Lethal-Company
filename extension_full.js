@@ -14,26 +14,27 @@ const DECORATIONS = {
   source: vscode.window.createTextEditorDecorationType({
     backgroundColor: 'rgba(0,200,100,0.12)',
     borderLeft: '3px solid #00C864',
-    after: { contentText: ' ⬤ ENTRY', color: '#00C864', margin: '0 0 0 10px',
-             fontWeight: '500', fontSize: '11px' }
+    after: { contentText: ' ⬤ ENTRY', color: '#00C864', 
+             margin: '0 0 0 10px', fontWeight: '500', fontSize: '11px' }
   }),
   sink: vscode.window.createTextEditorDecorationType({
     backgroundColor: 'rgba(255,80,80,0.12)',
     borderLeft: '3px solid #FF5050',
-    after: { contentText: ' ⬤ SINK', color: '#FF5050', margin: '0 0 0 10px',
-             fontWeight: '500', fontSize: '11px' }
+    after: { contentText: ' ⬤ SINK', color: '#FF5050',
+             margin: '0 0 0 10px', fontWeight: '500', fontSize: '11px' }
   }),
   sanitizer: vscode.window.createTextEditorDecorationType({
     backgroundColor: 'rgba(180,100,255,0.12)',
     borderLeft: '3px solid #B464FF',
-    after: { contentText: ' ⬤ GUARD', color: '#B464FF', margin: '0 0 0 10px',
-             fontWeight: '500', fontSize: '11px' }
+    after: { contentText: ' ⬤ GUARD', color: '#B464FF',
+             margin: '0 0 0 10px', fontWeight: '500', fontSize: '11px' }
   }),
   critical_sink: vscode.window.createTextEditorDecorationType({
-    backgroundColor: 'rgba(255,30,30,0.18)',
+    backgroundColor: 'rgba(255,30,30,0.20)',
     borderLeft: '4px solid #FF0000',
-    after: { contentText: ' 🔴 CRITICAL SINK', color: '#FF0000', margin: '0 0 0 10px',
-             fontWeight: '700', fontSize: '11px' }
+    fontWeight: 'bold',
+    after: { contentText: ' 🔴 CRITICAL SINK', color: '#FF0000',
+             margin: '0 0 0 10px', fontWeight: '700', fontSize: '11px' }
   }),
   new_path: vscode.window.createTextEditorDecorationType({
     backgroundColor: 'rgba(255,165,0,0.15)',
@@ -66,13 +67,23 @@ function getWorkspacePath(document) {
   const wf = vscode.workspace.getWorkspaceFolder(document.uri)
           || vscode.workspace.workspaceFolders?.[0];
   if (!wf) return null;
-  let dir = path.dirname(document.uri.fsPath);
   const wsRoot = wf.uri.fsPath;
+  
+  // PRIMARY: find .git directory (best indicator of repo root for TDRA)
+  let dir = wsRoot;
+  for (let i = 0; i < 6; i++) {
+    if (fs.existsSync(path.join(dir, '.git'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  
+  // FALLBACK: look for build files
+  dir = path.dirname(document.uri.fsPath);
   while (dir && dir.startsWith(wsRoot)) {
     const files = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
-    if (files.some(f => ['requirements.txt','pom.xml','build.gradle'].includes(f))) {
-      return dir;
-    }
+    if (files.some(f => ['requirements.txt','pom.xml','build.gradle',
+                          'package.json'].includes(f))) return dir;
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
@@ -110,10 +121,27 @@ async function analyzeProject(projectPath, backendUrl) {
   const graphData = await apiFetch(`${backendUrl}/api/graph`);
   _lastGraph = graphData;
 
-  // 3. TDRA timeline (non-blocking)
-  apiFetch(`${backendUrl}/api/tdra/timeline?repo_path=${encodeURIComponent(projectPath)}&limit=30`)
-    .then(d => { _lastTimeline = d; refreshRiskPanel(); })
-    .catch(() => {});
+  // 3. Fetch TDRA timeline (non-blocking — doesn't delay decorations)
+  apiFetch(
+    `${backendUrl}/api/tdra/timeline` +
+    `?repo_path=${encodeURIComponent(projectPath)}&limit=30`
+  ).then(d => {
+    _lastTimeline = d;
+    // Extract latest commit's new paths for orange decoration
+    const latest = d.timeline?.slice(-1)[0];
+    if (latest?.new_paths_detail) {
+      console.log(`VulnGraph TDRA: latest commit RF=${latest.risk_factor}` +
+                  ` severity=${latest.severity}` +
+                  ` new_paths=${latest.new_attack_paths}`);
+    }
+    // Re-apply decorations with new path info if editor is still open
+    const editor = vscode.window.activeTextEditor;
+    if (editor && _lastGraph) applyDecorations(editor.document, _lastGraph);
+    // Refresh dashboard if open
+    if (_riskPanel) refreshRiskPanel();
+  }).catch(err => {
+    console.log('VulnGraph TDRA: no git repo or analysis unavailable:', err.message);
+  });
 
   return { scanData, graphData };
 }
@@ -129,8 +157,17 @@ async function analyzeFile(document) {
   try {
     const { graphData } = await analyzeProject(projectPath, backendUrl);
     applyDecorations(document, graphData);
-    setStatus(`$(shield) VulnGraph: ${_lastScanData?.sinks || 0} sinks · ${_lastScanData?.sources || 0} entry`,
-              'VulnGraph analysis complete');
+
+    const latestCommit = _lastTimeline?.timeline?.slice(-1)[0];
+    const rfValue = (latestCommit?.risk_factor != null) ? Number(latestCommit.risk_factor) : null;
+    const rfText = latestCommit
+      ? (rfValue != null ? ` · RF ${rfValue.toFixed(2)} (${latestCommit.severity || 'Low'})` : ` · (${latestCommit.severity || 'Low'})`)
+      : '';
+    setStatus(
+      `$(shield) VulnGraph: ${_lastScanData?.sinks || 0} sinks${rfText}`,
+      `VulnGraph: ${_lastScanData?.sinks || 0} sink nodes detected` +
+      (latestCommit ? `. Latest commit risk: ${latestCommit.severity || 'Low'}` : '')
+    );
     if (_riskPanel) refreshRiskPanel();
   } catch (err) {
     setStatus('$(warning) VulnGraph: backend offline', 'Start backend: uvicorn backend.main:app --port 8002');
@@ -142,11 +179,11 @@ async function analyzeFile(document) {
 function applyDecorations(document, graphData) {
   const editor = vscode.window.visibleTextEditors.find(
     e => e.document.uri.toString() === document.uri.toString()
-  );
+  ) || vscode.window.activeTextEditor;
   if (!editor) return;
 
   const { showGuards } = getConfig();
-  const nodes = graphData?.nodes || [];
+  const nodes = Array.isArray(graphData) ? graphData : (graphData?.nodes || []);
   const docFile = document.uri.fsPath;
 
   const ranges = { source: [], sink: [], sanitizer: [], critical_sink: [], new_path: [] };
@@ -164,21 +201,21 @@ function applyDecorations(document, graphData) {
     const lineNo = (node.line || 1) - 1;
     if (lineNo < 0 || lineNo >= document.lineCount) continue;
 
-    const lineRange = document.lineAt(Math.min(lineNo, document.lineCount - 1)).range;
+    const lineRange = document.lineAt(lineNo).range;
     const isNewPath = newPathNodes.has(node.id);
-    const isCritical = node.type === 'sink' && (node.risk === 'HIGH' || node.severity === 'Critical'
-                        || (node.residual_risk && node.residual_risk > 0.7));
+    const isCritical = node.type === 'sink' && (node.residual_risk != null && node.residual_risk > 0.7);
 
+    const nodeTypeUpper = (node.type || 'unknown').toUpperCase();
     const hoverMsg = new vscode.MarkdownString(
-      `**VulnGraph — ${node.type?.toUpperCase()}**\n\n` +
+      `**VulnGraph — ${nodeTypeUpper}**\n\n` +
       `- **Label:** \`${node.label || node.id}\`\n` +
-      `- **File:** ${node.file || 'unknown'}:${node.line || '?'}\n` +
+      `- **File:** ${node.file || 'unknown'}:${node.line || 1}\n` +
       (node.cwe ? `- **CWE:** ${node.cwe}\n` : '') +
       (node.residual_risk != null ? `- **Residual risk:** ${node.residual_risk.toFixed(3)}\n` : '') +
       (node.effective_guard_strength != null
-        ? `- **Guard strength:** ${(node.effective_guard_strength * 100).toFixed(1)}%\n` : '') +
-      (node.git_blame ? `- **Introduced by:** ${node.git_blame.author} (${node.git_blame.date?.split('T')[0]})\n` : '') +
-      (isNewPath ? '\n⚠ **This node appears in a NEW attack path introduced by the latest commit.**' : '')
+        ? `- **Guard strength:** ${(node.effective_guard_strength * 100).toFixed(0)}%\n` : '') +
+      (node.git_blame ? `- **Introduced by:** ${node.git_blame.author} (${node.git_blame.date?.split('T')[0] || node.git_blame.date})\n` : '') +
+      (isNewPath ? '\n⚠ **This node appears in a new attack path introduced by the latest commit.**' : '')
     );
     hoverMsg.isTrusted = true;
 
