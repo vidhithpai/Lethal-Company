@@ -1,6 +1,7 @@
 .vscode/**
-.git/**
-*.vsix
-.gitignore
-test/**
-**/*.map
+node_modules/**
+**/*.ts
+**/.gitignore
+**/test/**
+**/*.test.js
+CHANGELOG.md

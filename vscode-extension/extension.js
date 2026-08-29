@@ -168,6 +168,18 @@ async function analyzeFile(document) {
       `VulnGraph: ${_lastScanData?.sinks || 0} sink nodes detected` +
       (latestCommit ? `. Latest commit risk: ${latestCommit.severity || 'Low'}` : '')
     );
+
+    const criticalSinks = (_lastGraph?.nodes || []).filter(
+      n => n.type === 'sink' && (n.residual_risk || 0) > 0.7
+    );
+    if (criticalSinks.length > 0) {
+      setStatus(
+        `$(shield) VulnGraph $(warning) ${criticalSinks.length}`,
+        `${criticalSinks.length} critical sink(s) detected. ` +
+        `Run "VulnGraph: Check Commit Risk" before committing.`
+      );
+    }
+
     if (_riskPanel) refreshRiskPanel();
   } catch (err) {
     setStatus('$(warning) VulnGraph: backend offline', 'Start backend: uvicorn backend.main:app --port 8002');
@@ -293,6 +305,40 @@ function openRiskPanel(context) {
         vscode.window.showErrorMessage('Failed to export report: ' + e.message);
       }
     }
+    if (msg.command === 'open3D') {
+      const { backendUrl } = getConfig();
+      const webUrl = backendUrl.replace(':8002', ':5173').replace(':8001', ':5173').replace('/api', '');
+      vscode.env.openExternal(vscode.Uri.parse(webUrl));
+    }
+    if (msg.command === 'openCommitDiff' && msg.hash) {
+      vscode.commands.executeCommand(
+        'git.showCommit',
+        msg.hash
+      ).catch(() => {
+        const channel = vscode.window.createOutputChannel('VulnGraph Diff');
+        channel.clear();
+        channel.appendLine(`Commit: ${msg.hash}`);
+        channel.appendLine('To view this diff: git show ' + msg.hash);
+        const timeline = _lastTimeline?.timeline || [];
+        const commit = timeline.find(c => 
+          c.commit_hash?.startsWith(msg.hash) || msg.hash.startsWith(c.commit_hash));
+        if (commit) {
+          channel.appendLine(`Author: ${commit.author}`);
+          channel.appendLine(`Date: ${commit.date}`);
+          channel.appendLine(`Message: ${commit.message}`);
+          channel.appendLine(`Risk Factor: ${commit.risk_factor} (${commit.severity})`);
+          channel.appendLine(`New attack paths: ${commit.new_attack_paths}`);
+          channel.appendLine(`Guard weakening events: ${commit.guard_weakening_events}`);
+          if (commit.new_paths_detail?.length) {
+            channel.appendLine('\nNew attack paths detail:');
+            commit.new_paths_detail.forEach((p, i) => {
+              channel.appendLine(`  Path ${i+1}: ${Array.isArray(p) ? p.join(' → ') : p}`);
+            });
+          }
+        }
+        channel.show();
+      });
+    }
   });
 
   refreshRiskPanel();
@@ -314,9 +360,10 @@ function refreshRiskPanel() {
   const commitRows = timeline.slice().reverse().map(c => {
     const rf = c.risk_factor || 0;
     const col = RF_COLOR(rf);
+    const shortHash = (c.commit_hash || '').slice(0, 7);
     return `
-      <tr class="commit-row" data-rf="${rf}">
-        <td><code style="color:#58A6FF">${(c.commit_hash||'').slice(0,7)}</code></td>
+      <tr class="commit-row" style="cursor:pointer" onclick="openCommitDiff('${c.commit_hash || ''}')" data-rf="${rf}">
+        <td><code style="color:#58A6FF">${shortHash}</code></td>
         <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
           ${(c.message||'').slice(0,50)}</td>
         <td>${c.author||'?'}</td>
@@ -328,7 +375,19 @@ function refreshRiskPanel() {
           </div>
         </td>
         <td style="color:#8B949E;font-size:11px">${c.new_attack_paths||0} paths · ${c.guard_weakening_events||0} guards</td>
-      </tr>`;
+      </tr>
+      ${c.new_paths_detail?.length ? `
+      <tr id="detail-${shortHash}" style="display:none;background:#0D1117">
+        <td colspan="6" style="padding:8px 16px">
+          <div style="font-size:11px;color:#8B949E;font-family:monospace">
+            ${c.new_paths_detail.slice(0,3).map((p,i) =>
+              `<div style="margin:3px 0;color:#FFA500">
+                Path ${i+1}: ${Array.isArray(p) ? p.join(' → ') : p}
+              </div>`
+            ).join('')}
+          </div>
+        </td>
+      </tr>` : ''}`;
   }).join('');
 
   const sinks = nodes.filter(n => n.type === 'sink');
@@ -412,6 +471,7 @@ function refreshRiskPanel() {
   </div>
   <div style="display:flex;gap:8px;align-items:center">
     <span class="src">${srcLabel} data · ${timeline.length} commits</span>
+    <button class="btn" onclick="open3D()">⎋ 3D view</button>
     <button class="btn btn-primary" onclick="exportReport()">⬇ Export Report</button>
   </div>
 </div>
@@ -509,6 +569,19 @@ function refreshRiskPanel() {
     vscode.postMessage({ command: 'exportReport' });
   }
 
+  function open3D() {
+    vscode.postMessage({ command: 'open3D' });
+  }
+
+  function openCommitDiff(hash) {
+    const shortHash = hash.slice(0, 7);
+    const detail = document.getElementById('detail-' + shortHash);
+    if (detail) detail.style.display = 
+      detail.style.display === 'none' ? 'table-row' : 'none';
+    if (!hash.startsWith('parent')) 
+      vscode.postMessage({ command: 'openCommitDiff', hash });
+  }
+
   window.addEventListener('message', e => {
     const { type, data } = e.data;
     if (type === 'validationResult') {
@@ -601,6 +674,83 @@ function activate(context) {
         );
       } catch (e) {
         vscode.window.showErrorMessage('Validation failed: ' + e.message);
+      }
+    }),
+    vscode.commands.registerCommand('vulngraph.checkCommitRisk', async () => {
+      const { backendUrl } = getConfig();
+      if (!_currentRepoPath) {
+        vscode.window.showWarningMessage(
+          'VulnGraph: No project scanned yet. Save a file first.'
+        );
+        return;
+      }
+      
+      setStatus('$(sync~spin) VulnGraph: checking commit risk...', '');
+      
+      try {
+        // Get the latest TDRA analysis
+        const data = await apiFetch(
+          `${backendUrl}/api/tdra/timeline` +
+          `?repo_path=${encodeURIComponent(_currentRepoPath)}&limit=5`
+        );
+        _lastTimeline = data;
+        
+        const latest = data.timeline?.slice(-1)[0];
+        if (!latest) {
+          vscode.window.showInformationMessage(
+            'VulnGraph: No commit history found. ' +
+            'Commit your first change to enable risk checking.'
+          );
+          return;
+        }
+        
+        const rf = latest.risk_factor || 0;
+        const sev = latest.severity || 'Low';
+        const newPaths = latest.new_attack_paths || 0;
+        const guardEvents = latest.guard_weakening_events || 0;
+        const isDemo = data.source === 'mock';
+        
+        // Build message based on severity
+        const icon = rf >= 0.7 ? '🔴' : rf >= 0.45 ? '🟠' : rf >= 0.2 ? '🟡' : '🟢';
+        const demoNote = isDemo ? ' [demo data]' : '';
+        
+        const message = `${icon} ${sev} risk${demoNote}: RF ${rf.toFixed(3)}` +
+          (newPaths > 0 ? ` · ${newPaths} new attack path(s)` : '') +
+          (guardEvents > 0 ? ` · ${guardEvents} guard weakening event(s)` : '');
+        
+        if (rf >= 0.45) {
+          // High / Critical — offer to open dashboard
+          const choice = await vscode.window.showWarningMessage(
+            `VulnGraph Security Check: ${message}`,
+            'View details', 'Export report', 'Dismiss'
+          );
+          if (choice === 'View details') {
+            openRiskPanel(context);
+          } else if (choice === 'Export report') {
+            vscode.commands.executeCommand('vulngraph.exportReport');
+          }
+        } else {
+          // Low / Medium — informational only
+          vscode.window.showInformationMessage(
+            `VulnGraph Security Check: ${message}`
+          );
+        }
+        
+        // Refresh dashboard if open
+        if (_riskPanel) refreshRiskPanel();
+        
+        // Update status bar
+        setStatus(
+          `$(shield) VulnGraph: RF ${rf.toFixed(2)} (${sev})`,
+          `Latest commit risk: ${sev} (RF ${rf.toFixed(3)})`
+        );
+        
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          'VulnGraph: Could not check commit risk. ' +
+          'Is the backend running at ' + backendUrl + '?'
+        );
+        setStatus('$(shield) VulnGraph', '');
       }
     })
   );

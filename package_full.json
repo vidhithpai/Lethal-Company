@@ -24,7 +24,8 @@
       { "command": "vulngraph.analyzeWorkspace",  "title": "VulnGraph: Analyze Workspace",           "icon": "$(search)" },
       { "command": "vulngraph.openDashboard",     "title": "VulnGraph: Open Risk Dashboard",         "icon": "$(graph)" },
       { "command": "vulngraph.exportReport",      "title": "VulnGraph: Export Security Report",      "icon": "$(cloud-download)" },
-      { "command": "vulngraph.runValidation",     "title": "VulnGraph: Run Statistical Validation",  "icon": "$(beaker)" }
+      { "command": "vulngraph.runValidation",     "title": "VulnGraph: Run Statistical Validation",  "icon": "$(beaker)" },
+      { "command": "vulngraph.checkCommitRisk",  "title": "VulnGraph: Check Commit Risk Before Committing", "icon": "$(git-commit)" }
     ],
     "menus": {
       "editor/title": [
@@ -34,6 +35,13 @@
       "editor/context": [
         { "command": "vulngraph.analyzeFile",    "group": "vulngraph", "when": "resourceLangId == python || resourceLangId == java" },
         { "command": "vulngraph.openDashboard",  "group": "vulngraph" }
+      ],
+      "scm/title": [
+        {
+          "command": "vulngraph.checkCommitRisk",
+          "group": "navigation",
+          "when": "scmProvider == git"
+        }
       ]
     },
     "configuration": {
