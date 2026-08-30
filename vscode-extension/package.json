@@ -1,7 +1,7 @@
 {
   "name": "vulngraph",
   "displayName": "VulnGraph Security Analyzer",
-  "description": "Commit-level TDRA security analysis — ENTRY/SINK/GUARD decorations, risk dashboard, statistical validation. All local.",
+  "description": "Commit-level TDRA security analysis — ENTRY/SINK/GUARD decorations, dataflow explorer, CodeLens metrics, risk dashboard, statistical validation. All local.",
   "version": "0.2.0",
   "publisher": "vulngraph-dev",
   "repository": { "type": "git", "url": "https://github.com/vulngraph/vulngraph" },
@@ -19,13 +19,24 @@
   ],
   "main": "./extension.js",
   "contributes": {
+    "views": {
+      "explorer": [
+        {
+          "id": "vulngraph.taintView",
+          "name": "VulnGraph Dataflow Explorer"
+        }
+      ]
+    },
     "commands": [
       { "command": "vulngraph.analyzeFile",      "title": "VulnGraph: Analyze Current File",        "icon": "$(shield)" },
       { "command": "vulngraph.analyzeWorkspace",  "title": "VulnGraph: Analyze Workspace",           "icon": "$(search)" },
       { "command": "vulngraph.openDashboard",     "title": "VulnGraph: Open Risk Dashboard",         "icon": "$(graph)" },
       { "command": "vulngraph.exportReport",      "title": "VulnGraph: Export Security Report",      "icon": "$(cloud-download)" },
       { "command": "vulngraph.runValidation",     "title": "VulnGraph: Run Statistical Validation",  "icon": "$(beaker)" },
-      { "command": "vulngraph.checkCommitRisk",  "title": "VulnGraph: Check Commit Risk Before Committing", "icon": "$(git-commit)" }
+      { "command": "vulngraph.checkCommitRisk",  "title": "VulnGraph: Check Commit Risk Before Committing", "icon": "$(git-commit)" },
+      { "command": "vulngraph.refreshDataflow",   "title": "VulnGraph: Refresh Dataflow Paths",      "icon": "$(refresh)" },
+      { "command": "vulngraph.jumpToLocation",    "title": "VulnGraph: Jump to Location" },
+      { "command": "vulngraph.focusDataflowPath", "title": "VulnGraph: Focus Path" }
     ],
     "menus": {
       "editor/title": [
@@ -41,6 +52,18 @@
           "command": "vulngraph.checkCommitRisk",
           "group": "navigation",
           "when": "scmProvider == git"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "vulngraph.refreshDataflow",
+          "when": "view == vulngraph.taintView",
+          "group": "navigation"
+        },
+        {
+          "command": "vulngraph.openDashboard",
+          "when": "view == vulngraph.taintView",
+          "group": "navigation"
         }
       ]
     },
@@ -61,6 +84,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show GUARD node decorations on sanitizer methods."
+        },
+        "vulngraph.enableCodeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable inline CodeLens metrics above sources and sinks."
         }
       }
     }
