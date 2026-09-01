@@ -139,19 +139,34 @@ function getConfig() {
 }
 
 function getWorkspacePath(document) {
-  if (document) {
-    const wf = vscode.workspace.getWorkspaceFolder(document.uri);
-    if (wf) return wf.uri.fsPath;
-    const docDir = path.dirname(document.uri.fsPath);
-    if (docDir && fs.existsSync(docDir)) return docDir;
+  // Strategy 1: Walk up from the current file to find .git root
+  // This is what TDRA needs — the actual git repository root
+  let searchDir = document
+    ? path.dirname(document.uri.fsPath)
+    : (vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null);
+
+  if (searchDir) {
+    let dir = searchDir;
+    for (let i = 0; i < 8; i++) {
+      if (fs.existsSync(path.join(dir, '.git'))) {
+        return dir;  // Found git root — use this for TDRA
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
   }
 
-  if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+  // Strategy 2: Use VS Code workspace folder (for non-git projects)
+  if (vscode.workspace.workspaceFolders?.length > 0) {
     const wsRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
-    if (fs.existsSync(path.join(wsRoot, 'demo_project'))) {
-      return path.join(wsRoot, 'demo_project');
-    }
+    // DO NOT fall back to demo_project — return the actual workspace
     return wsRoot;
+  }
+
+  // Strategy 3: Use the document's directory
+  if (document) {
+    return path.dirname(document.uri.fsPath);
   }
 
   return null;
@@ -192,6 +207,17 @@ function getCweTitle(cwe) {
     'CWE-1336': 'Server-Side Template Injection',
   };
   return map[cwe] || (cwe ? cwe : 'Vulnerability Path');
+}
+
+function findGitRoot(startPath) {
+  let dir = startPath;
+  for (let i = 0; i < 8; i++) {
+    if (fs.existsSync(path.join(dir, '.git'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return startPath; // fallback: return what we have
 }
 
 // ── Core Analysis Routine ─────────────────────────────────────────────────────
@@ -251,15 +277,22 @@ async function analyzeProject(projectPath, backendUrl, notifyUser = false) {
   }
 
   // 6. Fetch TDRA timeline (non-blocking)
+  const gitRoot = findGitRoot(projectPath);
   apiFetch(
     `${backendUrl}/api/tdra/timeline` +
-    `?repo_path=${encodeURIComponent(projectPath)}&limit=30`
+    `?repo_path=${encodeURIComponent(gitRoot)}&limit=30`
   ).then(d => {
     _lastTimeline = d;
+    // Show whether data is real or mock
+    const source = d?.source || 'unknown';
+    const commitCount = d?.timeline?.length || 0;
+    console.log(`[VulnGraph TDRA] Timeline source=${source}, commits=${commitCount}, gitRoot=${gitRoot}`);
     const editor = vscode.window.activeTextEditor;
     if (editor && _lastGraph) applyDecorations(editor.document, _lastGraph);
     if (_riskPanel) refreshRiskPanel();
-  }).catch(() => {});
+  }).catch(err => {
+    console.log('[VulnGraph TDRA] Timeline fetch failed:', err.message);
+  });
 
   return { scanData, graphData, attackPaths: _lastAttackPaths };
 }
@@ -1105,7 +1138,10 @@ function refreshRiskPanel() {
   const guardEvents   = timeline.reduce((a, c) => a + (c.guard_weakening_events || 0), 0);
   const avgRF         = timeline.length
     ? (timeline.reduce((a, c) => a + (c.risk_factor || 0), 0) / timeline.length).toFixed(3) : '—';
-  const srcLabel      = _lastTimeline?.source === 'live' ? 'LIVE' : 'DEMO';
+  const srcReason     = _lastTimeline?.reason || '';
+  const srcLabel      = _lastTimeline?.source === 'live'
+    ? '🟢 LIVE'
+    : `🟡 DEMO${srcReason ? ' — ' + srcReason : ''}`;
   const scannedFolder = _currentRepoPath ? path.basename(_currentRepoPath) : 'Active Workspace';
 
   const callGraphHtml = generateCallGraphSvg(_lastGraph, _lastAttackPaths);
@@ -1458,6 +1494,15 @@ function activate(context) {
 
     vscode.commands.registerCommand('vulngraph.openDashboard', () => {
       openRiskPanel(context);
+    }),
+
+    vscode.commands.registerCommand('vulngraph.debugPaths', () => {
+      const doc = vscode.window.activeTextEditor?.document;
+      const wsPath = getWorkspacePath(doc);
+      const gitRoot = wsPath ? findGitRoot(wsPath) : 'none';
+      vscode.window.showInformationMessage(
+        `VulnGraph paths:\nWorkspace: ${wsPath}\nGit root: ${gitRoot}`
+      );
     }),
 
     vscode.commands.registerCommand('vulngraph.refreshDataflow', () => {

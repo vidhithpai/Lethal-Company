@@ -35,6 +35,7 @@
       { "command": "vulngraph.runValidation",     "title": "VulnGraph: Run Statistical Validation",  "icon": "$(beaker)" },
       { "command": "vulngraph.checkCommitRisk",  "title": "VulnGraph: Check Commit Risk Before Committing", "icon": "$(git-commit)" },
       { "command": "vulngraph.refreshDataflow",   "title": "VulnGraph: Refresh Dataflow Paths",      "icon": "$(refresh)" },
+      { "command": "vulngraph.debugPaths",        "title": "VulnGraph: Debug Path Detection" },
       { "command": "vulngraph.jumpToLocation",    "title": "VulnGraph: Jump to Location" },
       { "command": "vulngraph.focusDataflowPath", "title": "VulnGraph: Focus Path" }
     ],
