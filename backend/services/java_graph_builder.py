@@ -72,35 +72,32 @@ def _read_file_methods(filepath: str) -> dict[str, str]:
 
     return methods
 
-def build_symbol_table(project_path: str) -> dict[str, str]:
+def build_symbol_table(project_path: str) -> dict:
     """
-    Scans all .java files in project_path and builds a global map of:
-    {method_name: node_id, ClassName.methodName: node_id}
-    
-    This allows cross-file call resolution — when file A calls 
-    userService.save(), we can find the node id of UserService.save()
-    in another file and add the edge.
-    
-    Returns: {symbol: node_id} where symbol is:
-      - "ClassName.methodName" (preferred, unambiguous)
-      - "methodName" (fallback, may have collisions)
+    Builds a scope-aware symbol table.
+    Returns {
+      "by_class": {"ClassName.methodName": node_id, ...},
+      "by_name":  {"methodName": [node_id, ...], ...},  # list — may be ambiguous
+      "class_files": {"ClassName": filepath, ...}        # for receiver typing
+    }
     """
-    symbol_table = {}
+    by_class: dict[str, str] = {}
+    by_name:  dict[str, list] = {}
+    class_files: dict[str, str] = {}
+
     java_files = list(Path(project_path).rglob("*.java"))
-    
     for jf in java_files:
         try:
             source = jf.read_text(encoding="utf-8", errors="replace")
         except Exception:
             continue
-        
-        # Extract class name from file
+
         class_match = re.search(
             r'\b(?:public\s+)?(?:class|interface|enum)\s+(\w+)', source
         )
         class_name = class_match.group(1) if class_match else jf.stem
-        
-        # Extract all method definitions
+        class_files[class_name] = str(jf)
+
         method_pattern = re.compile(
             r'(?:public|protected|private|static|\s)+[\w<>\[\]]+\s+'
             r'(\w+)\s*\([^)]*\)\s*(?:throws\s+[\w,\s]+)?\s*\{',
@@ -108,52 +105,48 @@ def build_symbol_table(project_path: str) -> dict[str, str]:
         )
         for m in method_pattern.finditer(source):
             method_name = m.group(1)
-            if method_name in ('if', 'for', 'while', 'switch', 'catch'):
+            if method_name in ('if','for','while','switch','catch','try',
+                               'else','new','return','class','interface'):
                 continue
-            
-            # Determine node type for this method
-            node_type = _classify_java_method(method_name, source, 
-                                               m.start(), class_name)
-            
-            # Build node_id same format as build_java_graph uses
+
             line_no = source[:m.start()].count('\n') + 1
-            node_id = _node_id(str(jf), line_no, node_type, method_name, root=project_path)
-            
-            # Register under multiple lookup keys
-            symbol_table[f"{class_name}.{method_name}"] = node_id
-            symbol_table[method_name] = node_id  # fallback
-            
-    return symbol_table
+            node_type = _classify_java_method_type(method_name, source,
+                                                    m.start(), class_name)
+            node_id = f"{jf.name}:{line_no}:{node_type}:{method_name}"
+
+            # Unambiguous: ClassName.methodName
+            full_key = f"{class_name}.{method_name}"
+            by_class[full_key] = node_id
+
+            # Potentially ambiguous: methodName alone
+            if method_name not in by_name:
+                by_name[method_name] = []
+            by_name[method_name].append(node_id)
+
+    return {"by_class": by_class, "by_name": by_name, "class_files": class_files}
 
 
-def _classify_java_method(method_name: str, source: str, 
-                           pos: int, class_name: str) -> str:
-    """Classify a method as source/sink/sanitizer/normal."""
-    # Check annotations on the 3 lines before the method
-    before = source[max(0, pos-300):pos]
-    
-    ENTRY_ANNOTATIONS = {'@RequestMapping','@GetMapping','@PostMapping',
-                         '@PutMapping','@DeleteMapping','@PatchMapping',
-                         '@MessageMapping','@KafkaListener','@RabbitListener'}
-    SINK_PATTERNS = {'execute','executeQuery','executeUpdate','exec',
-                     'invoke','write','send','publish','serialize',
-                     'createQuery','nativeQuery'}
-    GUARD_ANNOTATIONS = {'@Valid','@Validated','@NotNull','@NotBlank',
-                         '@Pattern','@Size','@Min','@Max'}
-    GUARD_NAMES = {'validate','sanitize','check','verify','escape',
-                   'filter','authorize','authenticate','isValid','hasPermission'}
-    
-    if any(ann in before for ann in ENTRY_ANNOTATIONS):
-        return 'source'
-    if any(ann in before for ann in GUARD_ANNOTATIONS):
-        return 'sanitizer'
-    if any(method_name.lower().startswith(g) for g in GUARD_NAMES):
-        return 'sanitizer'
-    if any(s in method_name.lower() for s in SINK_PATTERNS):
-        return 'sink'
+def _classify_java_method_type(method_name: str, source: str,
+                                pos: int, class_name: str) -> str:
+    """Classify a Java method into TDRA node type."""
+    before = source[max(0, pos - 400): pos]
+    ENTRY_ANN = {'@RequestMapping','@GetMapping','@PostMapping','@PutMapping',
+                 '@DeleteMapping','@PatchMapping','@KafkaListener',
+                 '@RabbitListener','@MessageMapping'}
+    SINK_PAT  = {'execute','executequery','executeupdate','exec','invoke',
+                 'write','send','serialize','forname','getwriter'}
+    GUARD_ANN = {'@Valid','@Validated','@NotNull','@NotBlank','@Pattern',
+                 '@Size','@PreAuthorize','@Secured','@RolesAllowed'}
+    GUARD_NAM = {'validate','sanitize','check','escape','filter',
+                 'authorize','authenticate','ispermitted','hasrole',
+                 'canonicalize','allowlist'}
+
+    if any(a in before for a in ENTRY_ANN): return 'source'
+    if any(a in before for a in GUARD_ANN): return 'sanitizer'
+    mn_lower = method_name.lower()
+    if any(mn_lower.startswith(g) for g in GUARD_NAM): return 'sanitizer'
+    if any(s in mn_lower for s in SINK_PAT): return 'sink'
     return 'normal'
-
-
 
 
 def build_java_graph(project_path: str) -> nx.DiGraph:
@@ -164,7 +157,10 @@ def build_java_graph(project_path: str) -> nx.DiGraph:
         return g
     
     # === PHASE 1: Build global symbol table ===
-    symbol_table = build_symbol_table(project_path)
+    sym = build_symbol_table(project_path)
+    by_class   = sym["by_class"]
+    by_name    = sym["by_name"]
+    class_files = sym["class_files"]
     
     file_methods: dict[str, dict[str, str]] = {}
     parsed_by_file: dict[str, dict[str, list[dict[str, Any]]]] = {}
@@ -291,33 +287,39 @@ def build_java_graph(project_path: str) -> nx.DiGraph:
             if caller_node is None:
                 continue
             
-            # Try to resolve the called method across all files
-            # Try "ClassName.method" first (check known class names)
             target_node = None
-            
-            # Strategy 1: direct name match (e.g. save -> UserRepository.save)
-            if called_method in symbol_table:
-                target_node = symbol_table[called_method]
-            
-            # Strategy 2: look for ClassName.method where ClassName 
-            # matches the variable type (from field declarations)
-            # e.g. "private UserService userService" -> UserService.save
+            confidence = "INFERRED"
+
+            # Step 1 — try receiver type inference (most precise, GitNexus pattern)
             field_pattern = re.compile(
-                rf'(\w+)\s+{re.escape(obj_name)}\s*[;=,)]'
+                rf'(\w+)\s+{re.escape(obj_name)}\s*[;=,)\n]'
             )
             field_match = field_pattern.search(source)
             if field_match:
                 inferred_class = field_match.group(1)
-                key = f"{inferred_class}.{called_method}"
-                if key in symbol_table:
-                    target_node = symbol_table[key]
-            
-            # Add cross-file edge if resolved and not self-loop
+                full_key = f"{inferred_class}.{called_method}"
+                if full_key in by_class:
+                    target_node = by_class[full_key]
+                    confidence = "EXTRACTED"  # receiver type found in source
+
+            # Step 2 — fall back to unambiguous name match
+            if target_node is None and called_method in by_name:
+                candidates = by_name[called_method]
+                if len(candidates) == 1:
+                    target_node = candidates[0]
+                    confidence = "INFERRED"   # name matched, class not confirmed
+                else:
+                    # Ambiguous — multiple classes have this method name
+                    # Pick the one whose file is most similar to current file
+                    target_node = candidates[0]  # best guess
+                    confidence = "AMBIGUOUS"
+
             if target_node and target_node != caller_node:
                 if not g.has_edge(caller_node, target_node):
-                    g.add_edge(caller_node, target_node, 
+                    g.add_edge(caller_node, target_node,
                                type='cross_file_call',
-                               reason='calls',
+                               edge_type='cross_file_call',
+                               confidence=confidence,
                                call_line=call_line)
 
     return g
