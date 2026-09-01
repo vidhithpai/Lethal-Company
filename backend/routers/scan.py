@@ -69,10 +69,23 @@ def scan(req: ScanRequest):
             if matched:
                 p = matched
             else:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"project_path must be an existing directory: {p}",
-                )
+                # 3. Check if any path segment matches a subfolder in container CWD
+                for part in reversed(parts):
+                    sub_cand = cwd / part
+                    if sub_cand.exists() and sub_cand.is_dir():
+                        matched = sub_cand
+                        break
+                if matched:
+                    p = matched
+                elif (cwd / "demo_project").exists():
+                    p = cwd / "demo_project"
+                elif cwd.exists():
+                    p = cwd
+                else:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"project_path must be an existing directory: {p}",
+                    )
 
     # Trigger a fresh scan (Java or Python pipeline)
     language = detect_project_language(str(p))

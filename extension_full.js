@@ -14,26 +14,27 @@ const DECORATIONS = {
   source: vscode.window.createTextEditorDecorationType({
     backgroundColor: 'rgba(0,200,100,0.12)',
     borderLeft: '3px solid #00C864',
-    after: { contentText: ' ⬤ ENTRY', color: '#00C864', margin: '0 0 0 10px',
-             fontWeight: '500', fontSize: '11px' }
+    after: { contentText: ' ⬤ ENTRY', color: '#00C864', 
+             margin: '0 0 0 10px', fontWeight: '500', fontSize: '11px' }
   }),
   sink: vscode.window.createTextEditorDecorationType({
     backgroundColor: 'rgba(255,80,80,0.12)',
     borderLeft: '3px solid #FF5050',
-    after: { contentText: ' ⬤ SINK', color: '#FF5050', margin: '0 0 0 10px',
-             fontWeight: '500', fontSize: '11px' }
+    after: { contentText: ' ⬤ SINK', color: '#FF5050',
+             margin: '0 0 0 10px', fontWeight: '500', fontSize: '11px' }
   }),
   sanitizer: vscode.window.createTextEditorDecorationType({
     backgroundColor: 'rgba(180,100,255,0.12)',
     borderLeft: '3px solid #B464FF',
-    after: { contentText: ' ⬤ GUARD', color: '#B464FF', margin: '0 0 0 10px',
-             fontWeight: '500', fontSize: '11px' }
+    after: { contentText: ' ⬤ GUARD', color: '#B464FF',
+             margin: '0 0 0 10px', fontWeight: '500', fontSize: '11px' }
   }),
   critical_sink: vscode.window.createTextEditorDecorationType({
-    backgroundColor: 'rgba(255,30,30,0.18)',
+    backgroundColor: 'rgba(255,30,30,0.20)',
     borderLeft: '4px solid #FF0000',
-    after: { contentText: ' 🔴 CRITICAL SINK', color: '#FF0000', margin: '0 0 0 10px',
-             fontWeight: '700', fontSize: '11px' }
+    fontWeight: 'bold',
+    after: { contentText: ' 🔴 CRITICAL SINK', color: '#FF0000',
+             margin: '0 0 0 10px', fontWeight: '700', fontSize: '11px' }
   }),
   new_path: vscode.window.createTextEditorDecorationType({
     backgroundColor: 'rgba(255,165,0,0.15)',
@@ -66,13 +67,23 @@ function getWorkspacePath(document) {
   const wf = vscode.workspace.getWorkspaceFolder(document.uri)
           || vscode.workspace.workspaceFolders?.[0];
   if (!wf) return null;
-  let dir = path.dirname(document.uri.fsPath);
   const wsRoot = wf.uri.fsPath;
+  
+  // PRIMARY: find .git directory (best indicator of repo root for TDRA)
+  let dir = wsRoot;
+  for (let i = 0; i < 6; i++) {
+    if (fs.existsSync(path.join(dir, '.git'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  
+  // FALLBACK: look for build files
+  dir = path.dirname(document.uri.fsPath);
   while (dir && dir.startsWith(wsRoot)) {
     const files = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
-    if (files.some(f => ['requirements.txt','pom.xml','build.gradle'].includes(f))) {
-      return dir;
-    }
+    if (files.some(f => ['requirements.txt','pom.xml','build.gradle',
+                          'package.json'].includes(f))) return dir;
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
@@ -110,10 +121,27 @@ async function analyzeProject(projectPath, backendUrl) {
   const graphData = await apiFetch(`${backendUrl}/api/graph`);
   _lastGraph = graphData;
 
-  // 3. TDRA timeline (non-blocking)
-  apiFetch(`${backendUrl}/api/tdra/timeline?repo_path=${encodeURIComponent(projectPath)}&limit=30`)
-    .then(d => { _lastTimeline = d; refreshRiskPanel(); })
-    .catch(() => {});
+  // 3. Fetch TDRA timeline (non-blocking — doesn't delay decorations)
+  apiFetch(
+    `${backendUrl}/api/tdra/timeline` +
+    `?repo_path=${encodeURIComponent(projectPath)}&limit=30`
+  ).then(d => {
+    _lastTimeline = d;
+    // Extract latest commit's new paths for orange decoration
+    const latest = d.timeline?.slice(-1)[0];
+    if (latest?.new_paths_detail) {
+      console.log(`VulnGraph TDRA: latest commit RF=${latest.risk_factor}` +
+                  ` severity=${latest.severity}` +
+                  ` new_paths=${latest.new_attack_paths}`);
+    }
+    // Re-apply decorations with new path info if editor is still open
+    const editor = vscode.window.activeTextEditor;
+    if (editor && _lastGraph) applyDecorations(editor.document, _lastGraph);
+    // Refresh dashboard if open
+    if (_riskPanel) refreshRiskPanel();
+  }).catch(err => {
+    console.log('VulnGraph TDRA: no git repo or analysis unavailable:', err.message);
+  });
 
   return { scanData, graphData };
 }
@@ -129,8 +157,29 @@ async function analyzeFile(document) {
   try {
     const { graphData } = await analyzeProject(projectPath, backendUrl);
     applyDecorations(document, graphData);
-    setStatus(`$(shield) VulnGraph: ${_lastScanData?.sinks || 0} sinks · ${_lastScanData?.sources || 0} entry`,
-              'VulnGraph analysis complete');
+
+    const latestCommit = _lastTimeline?.timeline?.slice(-1)[0];
+    const rfValue = (latestCommit?.risk_factor != null) ? Number(latestCommit.risk_factor) : null;
+    const rfText = latestCommit
+      ? (rfValue != null ? ` · RF ${rfValue.toFixed(2)} (${latestCommit.severity || 'Low'})` : ` · (${latestCommit.severity || 'Low'})`)
+      : '';
+    setStatus(
+      `$(shield) VulnGraph: ${_lastScanData?.sinks || 0} sinks${rfText}`,
+      `VulnGraph: ${_lastScanData?.sinks || 0} sink nodes detected` +
+      (latestCommit ? `. Latest commit risk: ${latestCommit.severity || 'Low'}` : '')
+    );
+
+    const criticalSinks = (_lastGraph?.nodes || []).filter(
+      n => n.type === 'sink' && (n.residual_risk || 0) > 0.7
+    );
+    if (criticalSinks.length > 0) {
+      setStatus(
+        `$(shield) VulnGraph $(warning) ${criticalSinks.length}`,
+        `${criticalSinks.length} critical sink(s) detected. ` +
+        `Run "VulnGraph: Check Commit Risk" before committing.`
+      );
+    }
+
     if (_riskPanel) refreshRiskPanel();
   } catch (err) {
     setStatus('$(warning) VulnGraph: backend offline', 'Start backend: uvicorn backend.main:app --port 8002');
@@ -142,11 +191,11 @@ async function analyzeFile(document) {
 function applyDecorations(document, graphData) {
   const editor = vscode.window.visibleTextEditors.find(
     e => e.document.uri.toString() === document.uri.toString()
-  );
+  ) || vscode.window.activeTextEditor;
   if (!editor) return;
 
   const { showGuards } = getConfig();
-  const nodes = graphData?.nodes || [];
+  const nodes = Array.isArray(graphData) ? graphData : (graphData?.nodes || []);
   const docFile = document.uri.fsPath;
 
   const ranges = { source: [], sink: [], sanitizer: [], critical_sink: [], new_path: [] };
@@ -164,21 +213,21 @@ function applyDecorations(document, graphData) {
     const lineNo = (node.line || 1) - 1;
     if (lineNo < 0 || lineNo >= document.lineCount) continue;
 
-    const lineRange = document.lineAt(Math.min(lineNo, document.lineCount - 1)).range;
+    const lineRange = document.lineAt(lineNo).range;
     const isNewPath = newPathNodes.has(node.id);
-    const isCritical = node.type === 'sink' && (node.risk === 'HIGH' || node.severity === 'Critical'
-                        || (node.residual_risk && node.residual_risk > 0.7));
+    const isCritical = node.type === 'sink' && (node.residual_risk != null && node.residual_risk > 0.7);
 
+    const nodeTypeUpper = (node.type || 'unknown').toUpperCase();
     const hoverMsg = new vscode.MarkdownString(
-      `**VulnGraph — ${node.type?.toUpperCase()}**\n\n` +
+      `**VulnGraph — ${nodeTypeUpper}**\n\n` +
       `- **Label:** \`${node.label || node.id}\`\n` +
-      `- **File:** ${node.file || 'unknown'}:${node.line || '?'}\n` +
+      `- **File:** ${node.file || 'unknown'}:${node.line || 1}\n` +
       (node.cwe ? `- **CWE:** ${node.cwe}\n` : '') +
       (node.residual_risk != null ? `- **Residual risk:** ${node.residual_risk.toFixed(3)}\n` : '') +
       (node.effective_guard_strength != null
-        ? `- **Guard strength:** ${(node.effective_guard_strength * 100).toFixed(1)}%\n` : '') +
-      (node.git_blame ? `- **Introduced by:** ${node.git_blame.author} (${node.git_blame.date?.split('T')[0]})\n` : '') +
-      (isNewPath ? '\n⚠ **This node appears in a NEW attack path introduced by the latest commit.**' : '')
+        ? `- **Guard strength:** ${(node.effective_guard_strength * 100).toFixed(0)}%\n` : '') +
+      (node.git_blame ? `- **Introduced by:** ${node.git_blame.author} (${node.git_blame.date?.split('T')[0] || node.git_blame.date})\n` : '') +
+      (isNewPath ? '\n⚠ **This node appears in a new attack path introduced by the latest commit.**' : '')
     );
     hoverMsg.isTrusted = true;
 
@@ -256,6 +305,40 @@ function openRiskPanel(context) {
         vscode.window.showErrorMessage('Failed to export report: ' + e.message);
       }
     }
+    if (msg.command === 'open3D') {
+      const { backendUrl } = getConfig();
+      const webUrl = backendUrl.replace(':8002', ':5173').replace(':8001', ':5173').replace('/api', '');
+      vscode.env.openExternal(vscode.Uri.parse(webUrl));
+    }
+    if (msg.command === 'openCommitDiff' && msg.hash) {
+      vscode.commands.executeCommand(
+        'git.showCommit',
+        msg.hash
+      ).catch(() => {
+        const channel = vscode.window.createOutputChannel('VulnGraph Diff');
+        channel.clear();
+        channel.appendLine(`Commit: ${msg.hash}`);
+        channel.appendLine('To view this diff: git show ' + msg.hash);
+        const timeline = _lastTimeline?.timeline || [];
+        const commit = timeline.find(c => 
+          c.commit_hash?.startsWith(msg.hash) || msg.hash.startsWith(c.commit_hash));
+        if (commit) {
+          channel.appendLine(`Author: ${commit.author}`);
+          channel.appendLine(`Date: ${commit.date}`);
+          channel.appendLine(`Message: ${commit.message}`);
+          channel.appendLine(`Risk Factor: ${commit.risk_factor} (${commit.severity})`);
+          channel.appendLine(`New attack paths: ${commit.new_attack_paths}`);
+          channel.appendLine(`Guard weakening events: ${commit.guard_weakening_events}`);
+          if (commit.new_paths_detail?.length) {
+            channel.appendLine('\nNew attack paths detail:');
+            commit.new_paths_detail.forEach((p, i) => {
+              channel.appendLine(`  Path ${i+1}: ${Array.isArray(p) ? p.join(' → ') : p}`);
+            });
+          }
+        }
+        channel.show();
+      });
+    }
   });
 
   refreshRiskPanel();
@@ -277,9 +360,10 @@ function refreshRiskPanel() {
   const commitRows = timeline.slice().reverse().map(c => {
     const rf = c.risk_factor || 0;
     const col = RF_COLOR(rf);
+    const shortHash = (c.commit_hash || '').slice(0, 7);
     return `
-      <tr class="commit-row" data-rf="${rf}">
-        <td><code style="color:#58A6FF">${(c.commit_hash||'').slice(0,7)}</code></td>
+      <tr class="commit-row" style="cursor:pointer" onclick="openCommitDiff('${c.commit_hash || ''}')" data-rf="${rf}">
+        <td><code style="color:#58A6FF">${shortHash}</code></td>
         <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
           ${(c.message||'').slice(0,50)}</td>
         <td>${c.author||'?'}</td>
@@ -291,7 +375,19 @@ function refreshRiskPanel() {
           </div>
         </td>
         <td style="color:#8B949E;font-size:11px">${c.new_attack_paths||0} paths · ${c.guard_weakening_events||0} guards</td>
-      </tr>`;
+      </tr>
+      ${c.new_paths_detail?.length ? `
+      <tr id="detail-${shortHash}" style="display:none;background:#0D1117">
+        <td colspan="6" style="padding:8px 16px">
+          <div style="font-size:11px;color:#8B949E;font-family:monospace">
+            ${c.new_paths_detail.slice(0,3).map((p,i) =>
+              `<div style="margin:3px 0;color:#FFA500">
+                Path ${i+1}: ${Array.isArray(p) ? p.join(' → ') : p}
+              </div>`
+            ).join('')}
+          </div>
+        </td>
+      </tr>` : ''}`;
   }).join('');
 
   const sinks = nodes.filter(n => n.type === 'sink');
@@ -375,6 +471,7 @@ function refreshRiskPanel() {
   </div>
   <div style="display:flex;gap:8px;align-items:center">
     <span class="src">${srcLabel} data · ${timeline.length} commits</span>
+    <button class="btn" onclick="open3D()">⎋ 3D view</button>
     <button class="btn btn-primary" onclick="exportReport()">⬇ Export Report</button>
   </div>
 </div>
@@ -472,6 +569,19 @@ function refreshRiskPanel() {
     vscode.postMessage({ command: 'exportReport' });
   }
 
+  function open3D() {
+    vscode.postMessage({ command: 'open3D' });
+  }
+
+  function openCommitDiff(hash) {
+    const shortHash = hash.slice(0, 7);
+    const detail = document.getElementById('detail-' + shortHash);
+    if (detail) detail.style.display = 
+      detail.style.display === 'none' ? 'table-row' : 'none';
+    if (!hash.startsWith('parent')) 
+      vscode.postMessage({ command: 'openCommitDiff', hash });
+  }
+
   window.addEventListener('message', e => {
     const { type, data } = e.data;
     if (type === 'validationResult') {
@@ -564,6 +674,83 @@ function activate(context) {
         );
       } catch (e) {
         vscode.window.showErrorMessage('Validation failed: ' + e.message);
+      }
+    }),
+    vscode.commands.registerCommand('vulngraph.checkCommitRisk', async () => {
+      const { backendUrl } = getConfig();
+      if (!_currentRepoPath) {
+        vscode.window.showWarningMessage(
+          'VulnGraph: No project scanned yet. Save a file first.'
+        );
+        return;
+      }
+      
+      setStatus('$(sync~spin) VulnGraph: checking commit risk...', '');
+      
+      try {
+        // Get the latest TDRA analysis
+        const data = await apiFetch(
+          `${backendUrl}/api/tdra/timeline` +
+          `?repo_path=${encodeURIComponent(_currentRepoPath)}&limit=5`
+        );
+        _lastTimeline = data;
+        
+        const latest = data.timeline?.slice(-1)[0];
+        if (!latest) {
+          vscode.window.showInformationMessage(
+            'VulnGraph: No commit history found. ' +
+            'Commit your first change to enable risk checking.'
+          );
+          return;
+        }
+        
+        const rf = latest.risk_factor || 0;
+        const sev = latest.severity || 'Low';
+        const newPaths = latest.new_attack_paths || 0;
+        const guardEvents = latest.guard_weakening_events || 0;
+        const isDemo = data.source === 'mock';
+        
+        // Build message based on severity
+        const icon = rf >= 0.7 ? '🔴' : rf >= 0.45 ? '🟠' : rf >= 0.2 ? '🟡' : '🟢';
+        const demoNote = isDemo ? ' [demo data]' : '';
+        
+        const message = `${icon} ${sev} risk${demoNote}: RF ${rf.toFixed(3)}` +
+          (newPaths > 0 ? ` · ${newPaths} new attack path(s)` : '') +
+          (guardEvents > 0 ? ` · ${guardEvents} guard weakening event(s)` : '');
+        
+        if (rf >= 0.45) {
+          // High / Critical — offer to open dashboard
+          const choice = await vscode.window.showWarningMessage(
+            `VulnGraph Security Check: ${message}`,
+            'View details', 'Export report', 'Dismiss'
+          );
+          if (choice === 'View details') {
+            openRiskPanel(context);
+          } else if (choice === 'Export report') {
+            vscode.commands.executeCommand('vulngraph.exportReport');
+          }
+        } else {
+          // Low / Medium — informational only
+          vscode.window.showInformationMessage(
+            `VulnGraph Security Check: ${message}`
+          );
+        }
+        
+        // Refresh dashboard if open
+        if (_riskPanel) refreshRiskPanel();
+        
+        // Update status bar
+        setStatus(
+          `$(shield) VulnGraph: RF ${rf.toFixed(2)} (${sev})`,
+          `Latest commit risk: ${sev} (RF ${rf.toFixed(3)})`
+        );
+        
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          'VulnGraph: Could not check commit risk. ' +
+          'Is the backend running at ' + backendUrl + '?'
+        );
+        setStatus('$(shield) VulnGraph', '');
       }
     })
   );
