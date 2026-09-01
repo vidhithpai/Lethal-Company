@@ -111,6 +111,7 @@ let _riskPanel         = null;   // WebviewPanel for TDRA risk dashboard
 let _statusBarItem     = null;
 let _saveDebounce      = null;
 let _currentRepoPath   = null;
+let _currentGitRoot    = null;
 let _taintTreeProvider = null;
 let _codeLensProvider  = null;
 
@@ -131,44 +132,74 @@ function isSameFile(file1, file2) {
 function getConfig() {
   const cfg = vscode.workspace.getConfiguration('vulngraph');
   return {
-    backendUrl: cfg.get('backendUrl', 'http://localhost:8002'),
-    autoAnalyze: cfg.get('autoAnalyzeOnSave', true),
-    showGuards: cfg.get('showGuardDecorations', true),
-    enableCodeLens: cfg.get('enableCodeLens', true),
+    backendUrl:           cfg.get('backendUrl', 'http://localhost:8001'),
+    autoAnalyze:          cfg.get('autoAnalyzeOnSave', true),
+    showGuards:           cfg.get('showGuardDecorations', true),
+    enableCodeLens:       cfg.get('enableCodeLens', true),
   };
 }
 
-function getWorkspacePath(document) {
-  // Strategy 1: Walk up from the current file to find .git root
-  // This is what TDRA needs — the actual git repository root
-  let searchDir = document
-    ? path.dirname(document.uri.fsPath)
-    : (vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null);
+async function resolveBackendUrl(configured) {
+  // Try the configured URL first
+  try {
+    const resp = await fetch(`${configured}/api/health`, 
+                             { signal: AbortSignal.timeout(2000) });
+    if (resp.ok || resp.status < 500) return configured;
+  } catch {}
+  
+  // Try the alternate port (8001 ↔ 8002)
+  const alternate = configured.includes(':8001')
+    ? configured.replace(':8001', ':8002')
+    : configured.replace(':8002', ':8001');
+  
+  try {
+    const resp = await fetch(`${alternate}/api/health`,
+                             { signal: AbortSignal.timeout(2000) });
+    if (resp.ok || resp.status < 500) {
+      console.log(`[VulnGraph] Using alternate backend: ${alternate}`);
+      return alternate;
+    }
+  } catch {}
+  
+  return configured; // return configured even if both fail — will error normally
+}
 
-  if (searchDir) {
-    let dir = searchDir;
-    for (let i = 0; i < 8; i++) {
-      if (fs.existsSync(path.join(dir, '.git'))) {
-        return dir;  // Found git root — use this for TDRA
-      }
+function getWorkspacePath(document) {
+  // PRIMARY: walk up from the open file to find .git root
+  // This gives TDRA the actual git repository — critical for real commits
+  const startDir = document
+    ? path.dirname(document.uri.fsPath)
+    : vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+
+  if (startDir) {
+    let dir = startDir;
+    for (let i = 0; i < 10; i++) {
+      try {
+        if (fs.existsSync(path.join(dir, '.git'))) {
+          // Confirm this is not the VulnGraph tool itself
+          // by checking if the user's file is inside this git root
+          if (document && document.uri.fsPath.startsWith(dir)) {
+            return dir;
+          }
+          // No document context — just return this git root
+          if (!document) return dir;
+        }
+      } catch {}
       const parent = path.dirname(dir);
       if (parent === dir) break;
       dir = parent;
     }
   }
 
-  // Strategy 2: Use VS Code workspace folder (for non-git projects)
+  // SECONDARY: use VS Code workspace folder
+  // But verify it's not the VulnGraph tool directory itself
   if (vscode.workspace.workspaceFolders?.length > 0) {
     const wsRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
-    // DO NOT fall back to demo_project — return the actual workspace
+    // Return the workspace root — NOT any subfolder like demo_project
     return wsRoot;
   }
 
-  // Strategy 3: Use the document's directory
-  if (document) {
-    return path.dirname(document.uri.fsPath);
-  }
-
+  if (document) return path.dirname(document.uri.fsPath);
   return null;
 }
 
@@ -210,20 +241,24 @@ function getCweTitle(cwe) {
 }
 
 function findGitRoot(startPath) {
+  if (!startPath) return null;
   let dir = startPath;
-  for (let i = 0; i < 8; i++) {
-    if (fs.existsSync(path.join(dir, '.git'))) return dir;
+  for (let i = 0; i < 10; i++) {
+    try {
+      if (fs.existsSync(path.join(dir, '.git'))) return dir;
+    } catch {}
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  return startPath; // fallback: return what we have
+  return startPath;
 }
 
 // ── Core Analysis Routine ─────────────────────────────────────────────────────
 async function analyzeProject(projectPath, backendUrl, notifyUser = false) {
-  setStatus('$(sync~spin) VulnGraph: scanning...', 'Scanning project AST and data flows...');
+  setStatus('$(sync~spin) VulnGraph: scanning...', '');
   _currentRepoPath = projectPath;
+  _currentGitRoot  = findGitRoot(projectPath);
 
   // 1. Scan codebase
   const scanData = await apiFetch(`${backendUrl}/api/cve/scan`, {
@@ -277,21 +312,33 @@ async function analyzeProject(projectPath, backendUrl, notifyUser = false) {
   }
 
   // 6. Fetch TDRA timeline (non-blocking)
-  const gitRoot = findGitRoot(projectPath);
+  const tdraPath = _currentGitRoot || projectPath;
   apiFetch(
     `${backendUrl}/api/tdra/timeline` +
-    `?repo_path=${encodeURIComponent(gitRoot)}&limit=30`
+    `?repo_path=${encodeURIComponent(tdraPath)}&limit=30`
   ).then(d => {
     _lastTimeline = d;
-    // Show whether data is real or mock
-    const source = d?.source || 'unknown';
-    const commitCount = d?.timeline?.length || 0;
-    console.log(`[VulnGraph TDRA] Timeline source=${source}, commits=${commitCount}, gitRoot=${gitRoot}`);
+    const src = d?.source || 'unknown';
+    const count = d?.timeline?.length || 0;
+    const reason = d?.reason || '';
+    console.log(
+      `[VulnGraph TDRA] source=${src} commits=${count}` +
+      ` gitRoot=${tdraPath}` +
+      (reason ? ` reason=${reason}` : '')
+    );
+    
+    // Show user if still showing mock
+    if (src === 'mock' && reason) {
+      vscode.window.setStatusBarMessage(
+        `VulnGraph TDRA: ${reason}`, 6000
+      );
+    }
+    
     const editor = vscode.window.activeTextEditor;
     if (editor && _lastGraph) applyDecorations(editor.document, _lastGraph);
     if (_riskPanel) refreshRiskPanel();
   }).catch(err => {
-    console.log('[VulnGraph TDRA] Timeline fetch failed:', err.message);
+    console.log('[VulnGraph TDRA] timeline failed:', err.message);
   });
 
   return { scanData, graphData, attackPaths: _lastAttackPaths };
@@ -299,9 +346,11 @@ async function analyzeProject(projectPath, backendUrl, notifyUser = false) {
 
 async function analyzeFile(document) {
   const ext = path.extname(document.fileName).toLowerCase();
-  if (!['.py', '.java'].includes(ext) && !['python', 'java'].includes(document.languageId)) return;
+  if (!['.py', '.java'].includes(ext) && 
+      !['python', 'java'].includes(document.languageId)) return;
 
-  const { backendUrl } = getConfig();
+  const { backendUrl: configuredUrl } = getConfig();
+  const backendUrl = await resolveBackendUrl(configuredUrl);
   const projectPath = getWorkspacePath(document);
   if (!projectPath) return;
 
@@ -327,13 +376,16 @@ async function analyzeFile(document) {
 
     if (_riskPanel) refreshRiskPanel();
   } catch (err) {
-    setStatus('$(warning) VulnGraph: backend offline', 'Start backend: uvicorn backend.main:app --port 8002');
-    vscode.window.setStatusBarMessage('VulnGraph: backend service not reachable at ' + backendUrl, 5000);
+    setStatus('$(warning) VulnGraph: backend offline',
+      `Cannot reach backend at ${backendUrl}. ` +
+      `If using Docker: ensure it is running (docker compose up). ` +
+      `If manual: run ./scripts/start_extension_backend.sh`);
   }
 }
 
 async function autoScanWorkspace() {
-  const { backendUrl } = getConfig();
+  const { backendUrl: configuredUrl } = getConfig();
+  const backendUrl = await resolveBackendUrl(configuredUrl);
   const projectPath = getWorkspacePath(vscode.window.activeTextEditor?.document);
   if (!projectPath) return;
 
@@ -344,7 +396,10 @@ async function autoScanWorkspace() {
       applyDecorations(activeEditor.document, graphData);
     }
   } catch (err) {
-    setStatus('$(warning) VulnGraph: backend offline', 'Start backend: uvicorn backend.main:app --port 8002');
+    setStatus('$(warning) VulnGraph: backend offline',
+      `Cannot reach backend at ${backendUrl}. ` +
+      `If using Docker: ensure it is running (docker compose up). ` +
+      `If manual: run ./scripts/start_extension_backend.sh`);
   }
 }
 
@@ -352,7 +407,8 @@ async function runIncrementalScan(triggerDoc, context) {
   if (_daemon.scanning) return;  // don't stack scans
   _daemon.scanning = true;
   
-  const { backendUrl } = getConfig();
+  const { backendUrl: configuredUrl } = getConfig();
+  const backendUrl = await resolveBackendUrl(configuredUrl);
   const projectPath = getWorkspacePath(triggerDoc);
   if (!projectPath) { _daemon.scanning = false; return; }
   
@@ -398,8 +454,9 @@ async function runIncrementalScan(triggerDoc, context) {
     if (editor) applyDecorations(editor.document, graphData);
     
     // Non-blocking TDRA refresh
+    const tdraPath = findGitRoot(projectPath);
     apiFetch(`${backendUrl}/api/tdra/timeline` +
-             `?repo_path=${encodeURIComponent(projectPath)}&limit=20`)
+             `?repo_path=${encodeURIComponent(tdraPath)}&limit=20`)
       .then(d => { _lastTimeline = d; if (_riskPanel) refreshRiskPanel(); })
       .catch(() => {});
     
@@ -1503,6 +1560,37 @@ function activate(context) {
       vscode.window.showInformationMessage(
         `VulnGraph paths:\nWorkspace: ${wsPath}\nGit root: ${gitRoot}`
       );
+    }),
+
+    vscode.commands.registerCommand('vulngraph.showDiagnostics', async () => {
+      const { backendUrl: configured } = getConfig();
+      const resolved = await resolveBackendUrl(configured);
+      const doc = vscode.window.activeTextEditor?.document;
+      const ws  = getWorkspacePath(doc);
+      const git = ws ? findGitRoot(ws) : 'none';
+      
+      let tdraStatus = 'not fetched';
+      try {
+        const d = await apiFetch(
+          `${resolved}/api/tdra/timeline?repo_path=${encodeURIComponent(git)}&limit=2`
+        );
+        tdraStatus = `source=${d.source} commits=${d.timeline?.length}` +
+                     (d.reason ? ` (${d.reason})` : '');
+      } catch (e) { tdraStatus = `error: ${e.message}`; }
+      
+      const msg = [
+        `Backend configured: ${configured}`,
+        `Backend resolved:   ${resolved}`,
+        `Workspace path:     ${ws || 'none'}`,
+        `Git root:           ${git}`,
+        `TDRA status:        ${tdraStatus}`,
+        `Last scan sinks:    ${_lastScanData?.sinks || 0}`,
+        `Timeline commits:   ${_lastTimeline?.timeline?.length || 0}`,
+      ].join('\n');
+      
+      vscode.window.showInformationMessage('VulnGraph Diagnostics', 
+                                            { detail: msg, modal: true }, 'OK');
+      console.log('[VulnGraph Diagnostics]\n' + msg);
     }),
 
     vscode.commands.registerCommand('vulngraph.refreshDataflow', () => {
