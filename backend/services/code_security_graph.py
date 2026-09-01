@@ -10,6 +10,7 @@ from typing import Any, Iterable
 import networkx as nx
 
 from .guard_attenuation import compute_path_residual_risk
+from backend.services.reaching_def import analyze_taint_flows
 
 @dataclass(frozen=True)
 class SecurityGraphConfig:
@@ -654,7 +655,10 @@ def build_security_graph(config: SecurityGraphConfig) -> dict[str, Any]:
     sinks: list[str] = []
     sanitizers: list[str] = []
 
+    scanned_files: list[Path] = []
+
     for py_file in _iter_python_files(config.root_dir, max_files=config.max_files):
+        scanned_files.append(py_file)
         try:
             text = py_file.read_text(encoding="utf-8")
             tree = ast.parse(text, filename=str(py_file))
@@ -666,6 +670,38 @@ def build_security_graph(config: SecurityGraphConfig) -> dict[str, Any]:
         sources.extend(list(vis.sources))
         sinks.extend(list(vis.sinks))
         sanitizers.extend(list(vis.sanitizers))
+
+    # For each scanned Python file, run REACHING_DEF to find missed flows
+    for filepath in scanned_files:
+        try:
+            source = Path(filepath).read_text(encoding='utf-8', errors='replace')
+        except Exception:
+            continue
+        
+        # Get source node names from this file
+        file_nodes = [n for n, d in g.nodes(data=True) 
+                      if d.get('file','').endswith(Path(filepath).name)]
+        source_nodes = [n for n in file_nodes 
+                        if g.nodes[n].get('type') == 'source']
+        entry_names = {g.nodes[n].get('label','') for n in source_nodes}
+        
+        flows = analyze_taint_flows(source, entry_names)
+        
+        for flow in flows:
+            # Add a REACHING_DEF edge annotation to the graph
+            # Find the closest source and sink nodes in this file
+            sink_nodes = [n for n in file_nodes 
+                          if g.nodes[n].get('type') == 'sink'
+                          and abs(g.nodes[n].get('line',0) - flow['line']) < 10]
+            for src_node in source_nodes:
+                for snk_node in sink_nodes:
+                    if not g.has_edge(src_node, snk_node):
+                        g.add_edge(src_node, snk_node,
+                                   edge_type='reaching_def_flow',
+                                   confidence='EXTRACTED',
+                                   tainted_vars=flow['tainted_args'],
+                                   guarded=flow['guarded'],
+                                   flow_line=flow['line'])
 
 
     for nid, is_patched in list(PATCHED_SECURITY_NODES.items()):
