@@ -14,6 +14,8 @@ This replaces 1 - guard_density with a product formulation that
 correctly models that two weak guards compound their effect.
 """
 
+from backend.services.cdg_guard_detector import cdg_attenuation_boost
+
 # ── CWE-to-sink category mapping ─────────────────────────────────────────────
 # Maps sink type keywords to their CWE category
 SINK_CWE_MAP = {
@@ -114,44 +116,59 @@ def get_guard_attenuation(guard_node: dict, sink_category: str) -> float:
     label = guard_node.get("label", "").lower()
     basis = guard_node.get("guard_basis", "name")
 
+    A = None
+
     # Try annotation-based lookup first (higher confidence)
     for ann in annotations:
         key = (ann, sink_category)
         if key in ATTENUATION_TABLE:
-            return ATTENUATION_TABLE[key]
+            A = ATTENUATION_TABLE[key]
+            break
         key_generic = (ann, "Generic")
         if key_generic in ATTENUATION_TABLE:
             # Use generic but downscale if sink-specific entry missing
-            return ATTENUATION_TABLE[key_generic] * 0.85
+            A = ATTENUATION_TABLE[key_generic] * 0.85
+            break
 
-    # Try name-based lookup
-    for pattern, category in [
-        ("sanitize",     "sanitize_name"),
-        ("escape",       "escape_name"),
-        ("validate",     "validate_name"),
-        ("check",        "check_name"),
-        ("filter",       "filter_name"),
-        ("authorize",    "authorize_name"),
-        ("authenticate", "authenticate_name"),
-        ("canonicalize", "canonicalize_name"),
-        ("realpath",     "realpath_name"),
-        ("allowlist",    "allowlist_name"),
-        ("ispermitted",  "ispermitted_name"),
-        ("hasrole",      "hasrole_name"),
-    ]:
-        if pattern in label:
-            key = (category, sink_category)
-            if key in ATTENUATION_TABLE:
-                return ATTENUATION_TABLE[key]
-            key_generic = (category, "Generic")
-            if key_generic in ATTENUATION_TABLE:
-                return ATTENUATION_TABLE[key_generic] * 0.80
+    if A is None:
+        # Try name-based lookup
+        for pattern, category in [
+            ("sanitize",     "sanitize_name"),
+            ("escape",       "escape_name"),
+            ("validate",     "validate_name"),
+            ("check",        "check_name"),
+            ("filter",       "filter_name"),
+            ("authorize",    "authorize_name"),
+            ("authenticate", "authenticate_name"),
+            ("canonicalize", "canonicalize_name"),
+            ("realpath",     "realpath_name"),
+            ("allowlist",    "allowlist_name"),
+            ("ispermitted",  "ispermitted_name"),
+            ("hasrole",      "hasrole_name"),
+        ]:
+            if pattern in label:
+                key = (category, sink_category)
+                if key in ATTENUATION_TABLE:
+                    A = ATTENUATION_TABLE[key]
+                    break
+                key_generic = (category, "Generic")
+                if key_generic in ATTENUATION_TABLE:
+                    A = ATTENUATION_TABLE[key_generic] * 0.80
+                    break
 
-    # Fallback based on how the guard was detected
-    if basis == "annotation":
-        return DEFAULT_ANNOTATION_ATTENUATION
-    else:
-        return DEFAULT_NAME_ATTENUATION
+    if A is None:
+        # Fallback based on how the guard was detected
+        if basis == "annotation":
+            A = DEFAULT_ANNOTATION_ATTENUATION
+        else:
+            A = DEFAULT_NAME_ATTENUATION
+
+    if source_code := guard_node.get("source_code"):
+        line = guard_node.get("line", 0)
+        boost = cdg_attenuation_boost(guard_node, source_code, line)
+        A = min(1.0, A + boost)  # CDG evidence upgrades attenuation
+
+    return A
 
 
 def compute_path_residual_risk(
