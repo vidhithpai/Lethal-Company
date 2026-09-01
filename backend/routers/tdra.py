@@ -222,72 +222,66 @@ def get_commit_analysis(commit_hash: str, repo_path: str = Query(...)):
         raise HTTPException(status_code=500, detail=f"Failed to analyze commit {commit_hash}: {str(e)}")
 
 
+def get_mock_timeline():
+    return [
+        {
+            "commit_hash": "a1b2c3d4",
+            "author": "dev-team",
+            "date": "2025-01-01",
+            "message": "Initial project setup",
+            "risk_factor": 0.15,
+            "severity": "Low",
+            "new_attack_paths": 0,
+            "guard_weakening_events": 0,
+        },
+        {
+            "commit_hash": "e5f6g7h8",
+            "author": "security-audit",
+            "date": "2025-01-02",
+            "message": "Updated endpoints and dependencies",
+            "risk_factor": 0.42,
+            "severity": "Medium",
+            "new_attack_paths": 1,
+            "guard_weakening_events": 0,
+        }
+    ]
+
+
 @router.get("/timeline")
-def get_tdra_timeline(repo_path: str = Query("demo_project"), limit: int = Query(50, ge=1, le=200)):
-    """
-    GET /api/tdra/timeline?repo_path=...&limit=50
-    Returns chronological timeline of commit risk factor scores.
-    """
-    path_input = (repo_path or "").strip()
-    git_root = find_git_root(path_input) if path_input else None
-
-    if not git_root:
-        try:
-            from backend.routers.scan import _scan_state
-            last_p = _scan_state.get("last_path")
-            if last_p:
-                git_root = find_git_root(last_p)
-        except Exception:
-            pass
-
-    if not git_root:
-        try:
-            from backend.services.code_security_graph import get_security_graph
-            built = get_security_graph()
-            g = built.get("graph")
-            if g:
-                for _, data in g.nodes(data=True):
-                    fp = data.get("file")
-                    if fp:
-                        cand_root = find_git_root(fp)
-                        if cand_root:
-                            git_root = cand_root
-                            break
-        except Exception:
-            pass
-
-    target_repo = git_root or path_input
-
-    if target_repo:
-        try:
-            results, _ = _get_analyzed_commit_results(target_repo, limit)
-            timeline = list(results)
-            timeline.reverse()
-            return {"timeline": timeline, "source": "git_analysis", "repo_path": target_repo}
-        except Exception as e:
-            print(f"[TDRA] Live git timeline failed for '{path_input}' ({e}), using baseline fallback")
-
-    # Fallback for uploaded projects or non-git folders
-    return {
-        "timeline": [
-            {
-                "commit_hash": "a1b2c3d4",
-                "author": "dev-team",
-                "date": "2025-01-01",
-                "message": "Initial project setup",
-                "risk_factor": 0.15,
-                "new_attack_paths": 0
-            },
-            {
-                "commit_hash": "e5f6g7h8",
-                "author": "security-audit",
-                "date": "2025-01-02",
-                "message": "Updated endpoints and dependencies",
-                "risk_factor": 0.42,
-                "new_attack_paths": 1
-            }
-        ],
-        "source": "mock",
-        "reason": "no_git_history_found_at_path",
-        "message": "Upload-based scans don't support commit history — enter a local repo path to see the Commit Risk Timeline."
-    }
+async def get_tdra_timeline(
+    repo_path: str = Query(...),
+    limit: int = Query(50)
+):
+    import os
+    
+    # Check if this is actually a git repo before trying analysis
+    git_dir = os.path.join(repo_path, '.git')
+    if not os.path.exists(git_dir):
+        # Not a git repo — return mock but tell the client why
+        mock = get_mock_timeline()
+        return {
+            "timeline": mock[:limit],
+            "source": "mock",
+            "reason": f"No .git directory found at {repo_path}"
+        }
+    
+    try:
+        results, _ = _get_analyzed_commit_results(repo_path, limit)
+        timeline = list(results)
+        timeline.reverse()
+        return {
+            "timeline": timeline,
+            "source": "live",
+            "git_root": repo_path,
+        }
+    except Exception as e:
+        # Real git repo but analysis failed — return error info + mock
+        import traceback
+        print(f"[TDRA] Analysis failed for {repo_path}: {e}")
+        print(traceback.format_exc())
+        mock = get_mock_timeline()
+        return {
+            "timeline": mock[:limit],
+            "source": "mock",
+            "reason": f"Analysis error: {str(e)[:200]}"
+        }
