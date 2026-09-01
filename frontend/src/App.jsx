@@ -3,6 +3,7 @@ import GraphCanvas from "./components/canvas/GraphCanvas";
 import MetricsBar from "./components/metrics/MetricsBar";
 import UnifiedPanel from "./components/panel/UnifiedPanel";
 import CommitTimeline from "./components/panel/CommitTimeline";
+import ExplorerPanel from "./components/panel/ExplorerPanel";
 import { endpoints, normalizeGraph } from "./services/api";
 import useStore from "./store/useStore";
 
@@ -18,6 +19,7 @@ const App = () => {
   const setPath = useStore((state) => state.setPath);
   const patchNodeLocal = useStore((state) => state.patchNodeLocal);
   
+  const [explorerCollapsed, setExplorerCollapsed] = useState(false);
   const [repoPath, setRepoPath] = useState("./demo_project");
   const [highlightedPathIndex, setHighlightedPathIndex] = useState(null);
   const [attackPaths, setAttackPaths] = useState([]);
@@ -136,6 +138,13 @@ const App = () => {
 
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
+      {/* LEFT: Explorer panel */}
+      <ExplorerPanel
+        collapsed={explorerCollapsed}
+        onToggle={() => setExplorerCollapsed(c => !c)}
+      />
+
+      {/* CENTER + RIGHT: existing layout unchanged */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         <input 
           type="file" 

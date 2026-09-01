@@ -50,6 +50,21 @@ const useStore = create((set, get) => ({
   setSelectedCommit: (c) => set({ selectedCommit: c }),
   setCommitTimeline: (t) => set({ commitTimeline: t }),
   setNewPaths: (p) => set({ newPaths: p }),
+
+  // ── Explorer panel filter state ───────────────────────────────────────────
+  nodeVisibility: {
+    source: true, sink: true, sanitizer: true, normal: true
+  },
+  edgeVisibility: {
+    call: true, cross_file_call: true, reaching_def_flow: true,
+    dataflow: true, same_file_call: true, extends: true,
+    implements: true, imports: true,
+  },
+  focusDepth: null,  // null = show all, N = N hops from selected node
+
+  setNodeVisibility: (v) => set({ nodeVisibility: v }),
+  setEdgeVisibility: (v) => set({ edgeVisibility: v }),
+  setFocusDepth:     (d) => set({ focusDepth: d }),
 }));
 
 export default useStore;
