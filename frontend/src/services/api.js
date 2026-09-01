@@ -29,5 +29,8 @@ export const endpoints = {
 
 export const normalizeGraph = (payload) => ({
   nodes: (payload?.nodes || []).map((n) => ({ ...n, id: n.id || String(n.id) })),
-  links: payload?.links || payload?.edges || [],
+  links: (payload?.links || payload?.edges || []).map(l => ({
+    ...l,
+    type: l.type || l.edge_type || 'dataflow',
+  })),
 });
