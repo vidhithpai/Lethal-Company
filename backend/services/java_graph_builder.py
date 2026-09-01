@@ -149,7 +149,67 @@ def _classify_java_method_type(method_name: str, source: str,
     return 'normal'
 
 
-def build_java_graph(project_path: str) -> nx.DiGraph:
+from backend.services.graph_manifest import (
+    load_manifest, save_manifest, get_changed_files,
+    update_manifest_after_scan, MANIFEST_FILENAME
+)
+
+# Add cached graph store at module level
+_graph_cache: dict[str, nx.DiGraph] = {}  # project_path -> graph
+
+
+def build_java_graph(project_path: str, 
+                     incremental: bool = True) -> nx.DiGraph:
+    """
+    Build (or incrementally update) the program graph for a Java project.
+    Uses manifest.json to detect and skip unchanged files.
+    """
+    if not incremental:
+        return _build_java_graph_full(project_path)
+    
+    manifest = load_manifest(project_path)
+    changed  = get_changed_files(project_path, manifest)
+    
+    total_changed = len(changed["new"]) + len(changed["changed"])
+    
+    # Full scan: no cached graph or >30% of files changed
+    total_files = total_changed + len(changed["unchanged"])
+    if (project_path not in _graph_cache 
+            or total_files == 0
+            or total_changed / max(total_files, 1) > 0.30):
+        G = _build_java_graph_full(project_path)
+        _graph_cache[project_path] = G
+        manifest = update_manifest_after_scan(manifest, changed)
+        save_manifest(project_path, manifest, G)
+        return G
+    
+    # Incremental: rebuild only changed files, merge into cached graph
+    G = _graph_cache[project_path].copy()
+    
+    # Remove nodes from deleted/changed files
+    files_to_remove = set(changed["deleted"] + changed["changed"])
+    nodes_to_remove = [n for n, d in G.nodes(data=True)
+                       if d.get("file", "") in files_to_remove]
+    G.remove_nodes_from(nodes_to_remove)
+    
+    # Analyze new/changed files only
+    files_to_analyze = changed["new"] + changed["changed"]
+    if files_to_analyze:
+        # Build partial graph for only the changed files
+        partial_tmp = _build_java_graph_for_files(
+            files_to_analyze, project_path
+        )
+        # Merge partial graph into main graph
+        G = nx.compose(G, partial_tmp)
+    
+    _graph_cache[project_path] = G
+    manifest = update_manifest_after_scan(manifest, changed)
+    save_manifest(project_path, manifest, G)
+    
+    return G
+
+
+def _build_java_graph_full(project_path: str) -> nx.DiGraph:
     g = nx.DiGraph()
     root = Path(project_path).resolve()
     java_files = list(Path(project_path).rglob("*.java"))
@@ -312,6 +372,167 @@ def build_java_graph(project_path: str) -> nx.DiGraph:
                     # Ambiguous — multiple classes have this method name
                     # Pick the one whose file is most similar to current file
                     target_node = candidates[0]  # best guess
+                    confidence = "AMBIGUOUS"
+
+            if target_node and target_node != caller_node:
+                if not g.has_edge(caller_node, target_node):
+                    g.add_edge(caller_node, target_node,
+                               type='cross_file_call',
+                               edge_type='cross_file_call',
+                               confidence=confidence,
+                               call_line=call_line)
+
+    return g
+
+
+def _build_java_graph_for_files(files: list[str], 
+                                 project_path: str) -> nx.DiGraph:
+    g = nx.DiGraph()
+    root = Path(project_path).resolve()
+    target_files = {str(Path(f).resolve()) for f in files}
+    if not target_files:
+        return g
+
+    sym = build_symbol_table(project_path)
+    by_class   = sym["by_class"]
+    by_name    = sym["by_name"]
+
+    file_methods: dict[str, dict[str, str]] = {}
+    parsed_by_file: dict[str, dict[str, list[dict[str, Any]]]] = {}
+
+    for filepath in target_files:
+        if not Path(filepath).exists():
+            continue
+        try:
+            source_text = Path(filepath).read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            source_text = ""
+
+        parsed = parse_java_file(filepath)
+        parsed_by_file[filepath] = parsed
+        file_methods[filepath] = _read_file_methods(filepath)
+
+        for category, items in parsed.items():
+            node_type = TYPE_MAP[category]
+            node_type = str(node_type).lower()
+            for item in items:
+                name = item["name"]
+                line = int(item["line"])
+                nid = _node_id(filepath, line, node_type, name, root=root)
+                if nid in g:
+                    continue
+                attrs = {
+                    "id": nid,
+                    "type": node_type,
+                    "file": filepath,
+                    "line": line,
+                    "label": f"{name}()",
+                    "risk_score": RISK_SCORES.get(node_type, 1.0),
+                    "risk": "high" if node_type == "sink" else "low",
+                    "patched": False,
+                }
+                if node_type == "sink":
+                    attrs["cwe"] = item.get("cwe")
+                    attrs["cwe_name"] = item.get("cwe_name")
+                    attrs["sink_kind"] = item.get("sink_kind")
+                    attrs["severity"] = item.get("severity", 8.0)
+                    attrs["taint_confirmed"] = False
+
+                if node_type in ("sanitizer", "guard"):
+                    lines = source_text.splitlines()
+                    start_idx = max(0, line - 6)
+                    before_text = "\n".join(lines[start_idx:line])
+                    GUARD_ANNOTATIONS = {"@Valid","@Validated","@NotNull","@NotBlank",
+                                         "@Pattern","@Size","@Min","@Max","@Positive",
+                                         "@PreAuthorize","@Secured","@RolesAllowed"}
+                    detected_annotations = [a for a in GUARD_ANNOTATIONS if a in before_text]
+                    has_annotation = len(detected_annotations) > 0
+                    attrs["guard_basis"] = "annotation" if has_annotation else "name"
+                    attrs["annotations"] = detected_annotations
+
+                g.add_node(nid, **attrs)
+
+    for filepath, methods in file_methods.items():
+        method_names = list(methods.keys())
+        for caller, body in methods.items():
+            caller_nodes = [
+                nid for nid, data in g.nodes(data=True)
+                if data.get("file") == filepath and data.get("label") == f"{caller}()"
+            ]
+            if not caller_nodes:
+                continue
+            caller_id = caller_nodes[0]
+
+            for callee in method_names:
+                if callee == caller:
+                    continue
+                if re.search(rf"\b{re.escape(callee)}\s*\(", body):
+                    callee_nodes = [
+                        nid for nid, data in g.nodes(data=True)
+                        if data.get("file") == filepath and data.get("label") == f"{callee}()"
+                    ]
+                    for callee_id in callee_nodes:
+                        if not g.has_edge(caller_id, callee_id):
+                            g.add_edge(
+                                caller_id,
+                                callee_id,
+                                type="call",
+                                reason="calls",
+                                weight=1.0,
+                            )
+
+    for filepath in target_files:
+        jf = Path(filepath)
+        if not jf.exists():
+            continue
+        try:
+            source = jf.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+
+        call_pattern = re.compile(r'(\w+)\.(\w+)\s*\(')
+        file_nodes = [n for n in g.nodes() 
+                      if g.nodes[n].get('file','').endswith(jf.name)]
+
+        for match in call_pattern.finditer(source):
+            obj_name = match.group(1)
+            called_method = match.group(2)
+            call_line = source[:match.start()].count('\n') + 1
+
+            caller_node = None
+            best_line_dist = float('inf')
+            for fn in file_nodes:
+                node_line = g.nodes[fn].get('line', 0)
+                if node_line <= call_line:
+                    dist = call_line - node_line
+                    if dist < best_line_dist:
+                        best_line_dist = dist
+                        caller_node = fn
+
+            if caller_node is None:
+                continue
+
+            target_node = None
+            confidence = "INFERRED"
+
+            field_pattern = re.compile(
+                rf'(\w+)\s+{re.escape(obj_name)}\s*[;=,)\n]'
+            )
+            field_match = field_pattern.search(source)
+            if field_match:
+                inferred_class = field_match.group(1)
+                full_key = f"{inferred_class}.{called_method}"
+                if full_key in by_class:
+                    target_node = by_class[full_key]
+                    confidence = "EXTRACTED"
+
+            if target_node is None and called_method in by_name:
+                candidates = by_name[called_method]
+                if len(candidates) == 1:
+                    target_node = candidates[0]
+                    confidence = "INFERRED"
+                else:
+                    target_node = candidates[0]
                     confidence = "AMBIGUOUS"
 
             if target_node and target_node != caller_node:
