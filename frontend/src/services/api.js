@@ -25,6 +25,7 @@ export const endpoints = {
   tdraCommit: (commitHash, repoPath) => `${API_BASE}/api/tdra/commit/${encodeURIComponent(commitHash)}?repo_path=${encodeURIComponent(repoPath)}`,
   tdraPathContributions: (commitHash, repoPath) => `${API_BASE}/api/tdra/commit/${encodeURIComponent(commitHash)}/path-contributions?repo_path=${encodeURIComponent(repoPath)}`,
   tdraTimeline: (repoPath, limit = 50) => `${API_BASE}/api/tdra/timeline?repo_path=${encodeURIComponent(repoPath)}&limit=${limit}`,
+  fileSource: (filepath) => `${API_BASE}/api/file/source?filepath=${encodeURIComponent(filepath)}`,
 };
 
 export const normalizeGraph = (payload) => ({

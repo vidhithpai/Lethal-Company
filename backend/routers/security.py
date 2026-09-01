@@ -238,3 +238,39 @@ def debug_edges(limit: int = Query(500, ge=1, le=5000)):
             break
     return {"edges": edges}
 
+
+@router.get("/api/file/source")
+def get_file_source(filepath: str = Query(...)):
+    """
+    Return the source code of a file that was scanned.
+    Only serves files that exist on the server filesystem.
+    """
+    from pathlib import Path
+    
+    p = Path(filepath).resolve()
+    
+    # Security: only serve files under known safe directories
+    allowed_prefixes = [
+        '/tmp/vulngraph_uploads',
+        '/app',
+        str(Path.cwd()),
+    ]
+    str_p = str(p)
+    if not any(str_p.startswith(prefix) for prefix in allowed_prefixes):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    try:
+        content = p.read_text(encoding='utf-8', errors='replace')
+        lines = content.splitlines()
+        return {
+            "filepath": str(p),
+            "content": content,
+            "line_count": len(lines),
+            "language": p.suffix.lstrip('.') or 'txt',
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
