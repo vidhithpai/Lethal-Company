@@ -281,11 +281,59 @@ const GraphCanvas = ({ onNodeClick }) => {
   const path         = useStore((state) => state.path);
   const diffMode     = useStore((state) => state.diffMode);
   const newPaths     = useStore((state) => state.newPaths);
+  const nodeVisibility = useStore((state) => state.nodeVisibility);
+  const edgeVisibility = useStore((state) => state.edgeVisibility);
+  const focusDepth     = useStore((state) => state.focusDepth);
+  const selectedNode   = useStore((state) => state.selectedNode);
   const containerRef = useRef(null);
   const graphRef     = useRef(null);
   const [size, setSize] = useState({ width: 800, height: 600 });
   const [viewMode, setViewMode] = useState('3d');
   const animatedObjectsRef = useRef([]);
+
+  const filteredGraph = useMemo(() => {
+    const nodes = graph?.nodes || [];
+    const links = graph?.links || [];
+
+    // 1. Node type filter
+    let visibleNodes = nodes.filter(n => {
+      const t = String(n.type || 'normal').toLowerCase();
+      return nodeVisibility[t] !== false;
+    });
+
+    // 2. Focus depth filter (if a node is selected and depth is set)
+    if (focusDepth !== null && selectedNode) {
+      const neighborSet = new Set([selectedNode.id]);
+      // BFS outward N hops
+      let frontier = [selectedNode.id];
+      for (let hop = 0; hop < focusDepth; hop++) {
+        const next = [];
+        for (const src of frontier) {
+          links.forEach(l => {
+            const s = l.source?.id || l.source;
+            const t = l.target?.id || l.target;
+            if (s === src && !neighborSet.has(t)) { neighborSet.add(t); next.push(t); }
+            if (t === src && !neighborSet.has(s)) { neighborSet.add(s); next.push(s); }
+          });
+        }
+        frontier = next;
+      }
+      visibleNodes = visibleNodes.filter(n => neighborSet.has(n.id));
+    }
+
+    const visibleNodeIds = new Set(visibleNodes.map(n => n.id));
+
+    // 3. Edge type filter + only keep edges where both endpoints visible
+    const visibleLinks = links.filter(l => {
+      const s = l.source?.id || l.source;
+      const t = l.target?.id || l.target;
+      if (!visibleNodeIds.has(s) || !visibleNodeIds.has(t)) return false;
+      const edgeType = (l.type || l.edge_type || 'dataflow').toLowerCase();
+      return edgeVisibility[edgeType] !== false;
+    });
+
+    return { nodes: visibleNodes, links: visibleLinks };
+  }, [graph, nodeVisibility, edgeVisibility, focusDepth, selectedNode]);
 
   const diffNodeSet = useMemo(() => {
     if (!diffMode || !newPaths) return new Set();
@@ -370,7 +418,7 @@ const GraphCanvas = ({ onNodeClick }) => {
     return () => {
       if (animId) cancelAnimationFrame(animId);
     };
-  }, [viewMode, graph]);
+  }, [viewMode, filteredGraph]);
 
   const pathNodeSet = useMemo(() => new Set(path), [path]);
   const pathEdgeSet = useMemo(() => {
@@ -382,8 +430,8 @@ const GraphCanvas = ({ onNodeClick }) => {
   }, [path]);
 
   const stats = useMemo(() => {
-    const nodes = graph?.nodes || [];
-    const links = graph?.links || [];
+    const nodes = filteredGraph?.nodes || [];
+    const links = filteredGraph?.links || [];
     const sources = nodes.filter((n) => String(n.type).toLowerCase() === 'source').length;
     const sinks = nodes.filter((n) => String(n.type).toLowerCase() === 'sink').length;
     return {
@@ -392,7 +440,7 @@ const GraphCanvas = ({ onNodeClick }) => {
       sources,
       sinks,
     };
-  }, [graph]);
+  }, [filteredGraph]);
 
   useEffect(() => {
     if (graphRef.current) {
@@ -453,7 +501,7 @@ const GraphCanvas = ({ onNodeClick }) => {
             ref={graphRef}
             width={size.width}
             height={size.height}
-            graphData={graph}
+            graphData={filteredGraph}
 
             nodeLabel={(node) =>
               `${node.label || node.id} · ${node.type || "node"} · line ${node.line || "?"}`
@@ -523,7 +571,7 @@ const GraphCanvas = ({ onNodeClick }) => {
       {/* ── 2D SCHEMATIC VIEW ────────────────────────────────────────────── */}
       {viewMode === '2d' && (
         <SchematicView
-          graph={graph}
+          graph={filteredGraph}
           path={path}
           onNodeClick={onNodeClick}
           viewMode={viewMode}
