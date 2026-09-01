@@ -33,6 +33,8 @@ _scan_state: dict = {
 
 class ScanRequest(BaseModel):
     project_path: str
+    changed_files: list[str] = []
+    incremental: bool = False
 
 
 @router.post("/scan")
@@ -87,10 +89,14 @@ def scan(req: ScanRequest):
                         detail=f"project_path must be an existing directory: {p}",
                     )
 
-    # Trigger a fresh scan (Java or Python pipeline)
+    # Trigger a scan (Java or Python pipeline)
     language = detect_project_language(str(p))
-    if language == "java":
-        built = analyze_java_codebase(str(p))
+    java_files_exist = any(Path(p).rglob("*.java"))
+    if java_files_exist:
+        from backend.services.java_graph_builder import build_java_graph, java_graph_to_built, store_java_graph
+        G = build_java_graph(str(p), incremental=req.incremental)
+        built = java_graph_to_built(G)
+        store_java_graph(str(p), built)
     else:
         from backend.services.code_security_graph import analyze_codebase
         built = analyze_codebase(str(p))

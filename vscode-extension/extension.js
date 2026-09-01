@@ -9,6 +9,19 @@ const vscode = require('vscode');
 const path   = require('path');
 const fs     = require('fs');
 
+// ── Daemon state ──────────────────────────────────────────────────────────────
+const _daemon = {
+  running: false,
+  lastFullScan: null,       // Date
+  lastIncrementalScan: null,// Date
+  scanQueue: [],            // files queued for re-analysis
+  scanning: false,
+  projectPath: null,
+  FULL_SCAN_INTERVAL_MS: 5 * 60 * 1000,    // full re-scan every 5 minutes
+  INCREMENTAL_DEBOUNCE_MS: 1200,             // wait 1.2s after last save
+  _debounceTimer: null,
+};
+
 // ── Decoration Types (Vibrant Color Highlighting, Solid Borders, & Bold Circular Dots) ──
 const DECORATIONS = {
   source: vscode.window.createTextEditorDecorationType({
@@ -299,6 +312,77 @@ async function autoScanWorkspace() {
     }
   } catch (err) {
     setStatus('$(warning) VulnGraph: backend offline', 'Start backend: uvicorn backend.main:app --port 8002');
+  }
+}
+
+async function runIncrementalScan(triggerDoc, context) {
+  if (_daemon.scanning) return;  // don't stack scans
+  _daemon.scanning = true;
+  
+  const { backendUrl } = getConfig();
+  const projectPath = getWorkspacePath(triggerDoc);
+  if (!projectPath) { _daemon.scanning = false; return; }
+  
+  _daemon.projectPath = projectPath;
+  setStatus('$(sync~spin) VulnGraph: incremental scan...', '');
+  
+  try {
+    const now = Date.now();
+    const needsFullScan = !_daemon.lastFullScan 
+      || (now - _daemon.lastFullScan) > _daemon.FULL_SCAN_INTERVAL_MS;
+    
+    if (needsFullScan) {
+      // Full scan — POST with no changed_files hint
+      const result = await apiFetch(`${backendUrl}/api/cve/scan`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ project_path: projectPath }),
+      });
+      _lastScanData = result;
+      _daemon.lastFullScan = now;
+    } else {
+      // Incremental scan — POST with only the queued files
+      const changedFiles = _daemon.scanQueue.splice(0);
+      const result = await apiFetch(`${backendUrl}/api/cve/scan`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          project_path: projectPath,
+          changed_files: changedFiles,   // backend uses manifest
+          incremental: true,
+        }),
+      });
+      _lastScanData = result;
+    }
+    _daemon.lastIncrementalScan = now;
+    
+    // Refresh graph after scan
+    const graphData = await apiFetch(`${backendUrl}/api/graph`);
+    _lastGraph = graphData;
+    
+    // Apply decorations
+    const editor = vscode.window.activeTextEditor;
+    if (editor) applyDecorations(editor.document, graphData);
+    
+    // Non-blocking TDRA refresh
+    apiFetch(`${backendUrl}/api/tdra/timeline` +
+             `?repo_path=${encodeURIComponent(projectPath)}&limit=20`)
+      .then(d => { _lastTimeline = d; if (_riskPanel) refreshRiskPanel(); })
+      .catch(() => {});
+    
+    const sinks = (_lastScanData?.sinks || 0);
+    const rf = _lastTimeline?.timeline?.slice(-1)[0]?.risk_factor;
+    const rfStr = rf != null ? ` · RF ${rf.toFixed(2)}` : '';
+    setStatus(`$(shield) VulnGraph: ${sinks} sinks${rfStr}`, 
+              `Last scan: ${new Date().toLocaleTimeString()}`);
+    
+    if (_riskPanel) refreshRiskPanel();
+    
+  } catch (err) {
+    setStatus('$(warning) VulnGraph: backend offline', 
+              'Start: ./scripts/start_extension_backend.sh');
+  } finally {
+    _daemon.scanning = false;
   }
 }
 
@@ -1515,13 +1599,23 @@ function activate(context) {
     })
   );
 
-  // 6. Auto-analyze on File Save (Debounced)
+  // 6. Auto-analyze on File Save (Daemon Queued & Debounced)
   context.subscriptions.push(
-    vscode.workspace.onDidSaveTextDocument(doc => {
+    vscode.workspace.onDidSaveTextDocument(async doc => {
       const { autoAnalyze } = getConfig();
       if (!autoAnalyze) return;
-      clearTimeout(_saveDebounce);
-      _saveDebounce = setTimeout(() => analyzeFile(doc), 800);
+      const ext = path.extname(doc.fileName).toLowerCase();
+      if (!['.py','.java'].includes(ext)) return;
+      
+      // Add to queue and debounce
+      if (!_daemon.scanQueue.includes(doc.uri.fsPath)) {
+        _daemon.scanQueue.push(doc.uri.fsPath);
+      }
+      
+      clearTimeout(_daemon._debounceTimer);
+      _daemon._debounceTimer = setTimeout(async () => {
+        await runIncrementalScan(doc, context);
+      }, _daemon.INCREMENTAL_DEBOUNCE_MS);
     })
   );
 
@@ -1546,6 +1640,7 @@ function deactivate() {
   _statusBarItem?.dispose();
   _riskPanel?.dispose();
   clearTimeout(_saveDebounce);
+  clearTimeout(_daemon._debounceTimer);
 }
 
 module.exports = { activate, deactivate };
