@@ -34,6 +34,37 @@ const getNodeSize = (node) => {
   return base * (riskMultiplier[risk] || 1.0) * (0.6 + confidence * 0.4);
 };
 
+function getEdgeStyle(link) {
+  const raw = (link.type || link.edge_type || '').toLowerCase();
+  
+  if (raw.includes('cross_file') || raw.includes('cross-file')) {
+    return { color: '#06B6D4', width: 1.8, opacity: 0.7, label: 'Cross-file' };
+  }
+  if (raw === 'call' || raw === 'calls') {
+    return { color: '#3B82F6', width: 1.5, opacity: 0.65, label: 'Calls' };
+  }
+  if (raw.includes('reaching_def') || raw.includes('taint')) {
+    return { color: '#8B5CF6', width: 2.0, opacity: 0.85, label: 'Taint' };
+  }
+  if (raw === 'dataflow' || raw === 'data_flow') {
+    return { color: '#06B6D4', width: 1.4, opacity: 0.55, label: 'DataFlow' };
+  }
+  if (raw === 'extends') {
+    return { color: '#F59E0B', width: 1.6, opacity: 0.70, label: 'Extends' };
+  }
+  if (raw === 'implements') {
+    return { color: '#EC4899', width: 1.6, opacity: 0.70, label: 'Implements' };
+  }
+  if (raw === 'imports') {
+    return { color: '#6B7280', width: 1.0, opacity: 0.40, label: 'Imports' };
+  }
+  if (raw.includes('same_file')) {
+    return { color: '#374151', width: 1.0, opacity: 0.40, label: 'Same-file' };
+  }
+  // Default: generic edge
+  return { color: 'rgba(6, 182, 212, 0.35)', width: 1.2, opacity: 0.4, label: '' };
+}
+
 // ─── Top-Left HUD ─────────────────────────────────────────────────────────────
 const ThreatNebulaHUD = ({ stats }) => (
   <div className="hud-panel hud-top-left">
@@ -91,6 +122,30 @@ const LegendHUD = () => (
         <span>Patched</span>
       </div>
     </div>
+
+    <div style={{ borderTop:'1px solid rgba(255,255,255,0.08)', 
+                  paddingTop:8, marginTop:8 }}>
+      <div style={{ fontSize:10, fontWeight:600, 
+                    color:'#6B7280', marginBottom:6 }}>EDGE TYPES</div>
+      {[
+        { color:'#3B82F6',  label:'Calls' },
+        { color:'#06B6D4',  label:'Cross-file / Data flow' },
+        { color:'#8B5CF6',  label:'Taint flow' },
+        { color:'#F59E0B',  label:'Extends' },
+        { color:'#EC4899',  label:'Implements' },
+        { color:'rgba(239,68,68,0.95)', label:'Attack path' },
+      ].map(e => (
+        <div key={e.label} style={{ display:'flex', alignItems:'center',
+                                     gap:6, marginBottom:3 }}>
+          <div style={{ width:16, height:2, background:e.color,
+                         borderRadius:1, flexShrink:0 }} />
+          <span style={{ fontSize:9, color:'rgba(255,255,255,0.55)' }}>
+            {e.label}
+          </span>
+        </div>
+      ))}
+    </div>
+
     <div className="hud-legend-footer">
       Opacity = Confidence
     </div>
@@ -517,21 +572,19 @@ const GraphCanvas = ({ onNodeClick }) => {
             linkWidth={(link) => {
               const s = link.source?.id || link.source;
               const t = link.target?.id || link.target;
-              if (diffMode) {
-                return diffLinkSet.has(`${s}->${t}`) ? 3 : 1.2;
-              }
-              return pathEdgeSet.has(`${s}->${t}`) ? 3.5 : 1.2;
+              if (diffMode && diffLinkSet.has(`${s}->${t}`)) return 3;
+              if (pathEdgeSet.has(`${s}->${t}`) || link.on_attack_path) return 3.5;
+              return getEdgeStyle(link).width;
             }}
             linkColor={(link) => {
               const s = link.source?.id || link.source;
               const t = link.target?.id || link.target;
-              if (diffMode) {
-                return diffLinkSet.has(`${s}->${t}`) ? '#FF4444' : 'rgba(255, 255, 255, 0.1)';
-              }
-              const isOnPath = pathEdgeSet.has(`${s}->${t}`);
+              // Attack path override
+              if (diffMode && diffLinkSet.has(`${s}->${t}`)) return '#FF4444';
+              if (pathEdgeSet.has(`${s}->${t}`) || link.on_attack_path) return 'rgba(239, 68, 68, 0.95)';
               if (link.patched) return '#374151';
-              if (isOnPath || link.on_attack_path) return 'rgba(239, 68, 68, 0.95)';
-              return 'rgba(6, 182, 212, 0.35)';
+              // Edge type colour
+              return getEdgeStyle(link).color;
             }}
             linkOpacity={(link) => {
               if (diffMode) {
@@ -539,7 +592,7 @@ const GraphCanvas = ({ onNodeClick }) => {
                 const t = link.target?.id || link.target;
                 return diffLinkSet.has(`${s}->${t}`) ? 1.0 : 0.1;
               }
-              return 0.85;
+              return getEdgeStyle(link).opacity;
             }}
 
             linkDirectionalParticles={(link) => {
