@@ -36,6 +36,7 @@
       { "command": "vulngraph.checkCommitRisk",  "title": "VulnGraph: Check Commit Risk Before Committing", "icon": "$(git-commit)" },
       { "command": "vulngraph.refreshDataflow",   "title": "VulnGraph: Refresh Dataflow Paths",      "icon": "$(refresh)" },
       { "command": "vulngraph.debugPaths",        "title": "VulnGraph: Debug Path Detection" },
+      { "command": "vulngraph.showDiagnostics",   "title": "VulnGraph: Show Diagnostics" },
       { "command": "vulngraph.jumpToLocation",    "title": "VulnGraph: Jump to Location" },
       { "command": "vulngraph.focusDataflowPath", "title": "VulnGraph: Focus Path" }
     ],
@@ -73,8 +74,8 @@
       "properties": {
         "vulngraph.backendUrl": {
           "type": "string",
-          "default": "http://localhost:8002",
-          "description": "VulnGraph backend URL. Default: local backend at port 8002."
+          "default": "http://localhost:8001",
+          "description": "VulnGraph backend URL. Defaults to Docker port 8001. Change to 8002 if running backend manually with start_extension_backend.sh."
         },
         "vulngraph.autoAnalyzeOnSave": {
           "type": "boolean",

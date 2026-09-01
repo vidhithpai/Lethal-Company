@@ -50,6 +50,11 @@ app.include_router(graph_router, prefix="/api/graph")
 app.include_router(tdra_router, prefix="/api/tdra")
 
 
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "service": "VulnGraph"}
+
+
 @app.get("/")
 def root():
     return {

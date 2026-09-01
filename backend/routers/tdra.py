@@ -248,40 +248,27 @@ def get_mock_timeline():
 
 
 @router.get("/timeline")
-async def get_tdra_timeline(
-    repo_path: str = Query(...),
-    limit: int = Query(50)
-):
-    import os
+async def get_tdra_timeline(repo_path: str = Query(...), limit: int = Query(50)):
+    import os, logging
+    logger = logging.getLogger("tdra")
     
-    # Check if this is actually a git repo before trying analysis
     git_dir = os.path.join(repo_path, '.git')
+    logger.info(f"TDRA timeline request: repo_path={repo_path} git_exists={os.path.exists(git_dir)}")
+    
+    if not os.path.exists(repo_path):
+        return {"timeline": get_mock_timeline()[:limit], "source": "mock",
+                "reason": f"Path does not exist on server: {repo_path}"}
+    
     if not os.path.exists(git_dir):
-        # Not a git repo — return mock but tell the client why
-        mock = get_mock_timeline()
-        return {
-            "timeline": mock[:limit],
-            "source": "mock",
-            "reason": f"No .git directory found at {repo_path}"
-        }
+        return {"timeline": get_mock_timeline()[:limit], "source": "mock",
+                "reason": f"No .git directory at {repo_path}"}
     
     try:
         results, _ = _get_analyzed_commit_results(repo_path, limit)
-        timeline = list(results)
-        timeline.reverse()
-        return {
-            "timeline": timeline,
-            "source": "live",
-            "git_root": repo_path,
-        }
+        timeline = list(reversed(results))
+        return {"timeline": timeline, "source": "live", "git_root": repo_path}
     except Exception as e:
-        # Real git repo but analysis failed — return error info + mock
         import traceback
-        print(f"[TDRA] Analysis failed for {repo_path}: {e}")
-        print(traceback.format_exc())
-        mock = get_mock_timeline()
-        return {
-            "timeline": mock[:limit],
-            "source": "mock",
-            "reason": f"Analysis error: {str(e)[:200]}"
-        }
+        logger.error(f"TDRA analysis error: {e}\n{traceback.format_exc()}")
+        return {"timeline": get_mock_timeline()[:limit], "source": "mock",
+                "reason": f"Analysis error: {str(e)[:150]}"}
