@@ -11,6 +11,7 @@ from .guard_attenuation import (
     compute_path_residual_risk,
     compute_delta_attenuation,
 )
+from backend.services.depth_budget import compute_depth_budget
 
 
 class DifferentialEngine:
@@ -162,18 +163,35 @@ class DifferentialEngine:
         Returns a set of ORDERED tuples, each representing one distinct
         source->sink path.
         """
-        sources = [n for n, d in G.nodes(data=True) if d.get("type") == "source"]
-        sinks = [n for n, d in G.nodes(data=True) if d.get("type") == "sink"]
-        paths = set()
+        # Compute adaptive budget
+        budget = compute_depth_budget(G)
+        
+        sources = [n for n, d in G.nodes(data=True) if d.get('type') == 'source']
+        sinks   = [n for n, d in G.nodes(data=True) if d.get('type') == 'sink']
+        paths   = set()
+        total   = 0
+        
         for src in sources:
+            per_entry = 0
             for sink in sinks:
                 try:
-                    for path in nx.all_simple_paths(G, src, sink, cutoff=15):
+                    for path in nx.all_simple_paths(
+                        G, src, sink, cutoff=budget.max_depth
+                    ):
                         paths.add(tuple(path))
-                        if len(paths) >= max_paths:
+                        per_entry += 1
+                        total     += 1
+                        # Per-entry cap
+                        if per_entry >= budget.max_paths_per_entry:
+                            break
+                        # Global cap
+                        if total >= budget.max_total_paths:
                             return paths
-                except Exception:
+                except (nx.NetworkXNoPath, nx.NodeNotFound, Exception):
                     continue
+                if per_entry >= budget.max_paths_per_entry:
+                    break
+        
         return paths
 
     def get_guard_set(self, G: nx.DiGraph, reachability: set[tuple]) -> dict[tuple, float]:
@@ -260,6 +278,7 @@ class DifferentialEngine:
             G_prev = self.build_graph_at_commit(parent_hash)
             G_curr = self.build_graph_at_commit(commit_hash)
 
+        budget = compute_depth_budget(G_curr)
         R_prev = self.get_reachability_set(G_prev)
         R_curr = self.get_reachability_set(G_curr)
         guards_prev = self.get_guard_set(G_prev, R_prev)
@@ -325,4 +344,7 @@ class DifferentialEngine:
             "severity": severity,
             "new_paths_detail": [list(p)[:8] for p in list(new_paths)[:5]],
             "analysis_method": "git_diff_scoped" if changed_files else "full_clone",
+            "depth_strategy": budget.strategy,
+            "depth_reason": budget.reason,
+            "depth_used": budget.max_depth,
         }
