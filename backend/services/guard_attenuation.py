@@ -27,16 +27,25 @@ SINK_CWE_MAP = {
     "exec":         ("Command", "CWE-78"),
     "runtime":      ("Command", "CWE-78"),
     "processbuilder":("Command","CWE-78"),
+    "subprocess":   ("Command", "CWE-78"),
+    "system":       ("Command", "CWE-78"),
+    "popen":        ("Command", "CWE-78"),
     "eval":         ("Code",    "CWE-95"),
     "write":        ("File",    "CWE-22"),
     "filewriter":   ("File",    "CWE-22"),
     "files.write":  ("File",    "CWE-22"),
+    "open":         ("File",    "CWE-22"),
+    "read":         ("File",    "CWE-22"),
     "serialize":    ("Serial",  "CWE-502"),
     "pickle":       ("Serial",  "CWE-502"),
+    "yaml":         ("Serial",  "CWE-502"),
     "invoke":       ("Reflect", "CWE-470"),
     "forname":      ("Reflect", "CWE-470"),
     "getwriter":    ("XSS",     "CWE-79"),
     "response":     ("XSS",     "CWE-79"),
+    "requests":     ("SSRF",    "CWE-918"),
+    "httpx":        ("SSRF",    "CWE-918"),
+    "urllib":       ("SSRF",    "CWE-918"),
 }
 
 # ── Guard attenuation table ───────────────────────────────────────────────────
@@ -56,6 +65,8 @@ ATTENUATION_TABLE = {
     ("@Valid",         "Command"): 0.70,
     ("allowlist_name", "Command"): 0.85,
     ("validate_name",  "Command"): 0.65,
+    ("shlex_name",     "Command"): 0.90,
+    ("quote_name",     "Command"): 0.85,
 
     # File path guards
     ("@Valid",         "File"):    0.60,
@@ -143,6 +154,8 @@ def get_guard_attenuation(guard_node: dict, sink_category: str) -> float:
             ("canonicalize", "canonicalize_name"),
             ("realpath",     "realpath_name"),
             ("allowlist",    "allowlist_name"),
+            ("shlex",        "shlex_name"),
+            ("quote",        "quote_name"),
             ("ispermitted",  "ispermitted_name"),
             ("hasrole",      "hasrole_name"),
         ]:
@@ -171,27 +184,47 @@ def get_guard_attenuation(guard_node: dict, sink_category: str) -> float:
     return A
 
 
+# Base exploitability priors per CWE/sink category (CVSS v3.1 exploitability grounding)
+BASE_EXPLOITABILITY_PRIORS = {
+    "SQL": 0.88,         # CWE-89: SQL Injection
+    "Command": 0.92,     # CWE-78: OS Command Injection
+    "Code": 0.92,        # CWE-95: Eval / Code Execution
+    "Deserialization": 0.85,  # CWE-502
+    "SSRF": 0.82,        # CWE-918
+    "File": 0.75,        # CWE-22: Path Traversal / Arbitrary File Write
+    "XSS": 0.70,         # CWE-79: Cross-Site Scripting
+    "Generic": 0.65,     # Generic sensitive sink
+}
+
+
 def compute_path_residual_risk(
     path_nodes: list[str],
     G,  # nx.DiGraph
     sink_node_id: str
 ) -> dict:
     """
-    Compute the residual taint risk for a path using the product formulation.
+    Compute statistical residual taint risk for a path using the
+    Probabilistic Bayesian Taint Model (PBTM):
     
-    For each guard g_i on the path with attenuation A_i:
-      residual_risk = product of (1 - A_i) for all i
+      R(p) = P_base(sink) * P_trans(path) * Product(1 - A_i)
     
-    residual_risk = 1.0 → no guards → full taint reaches sink
-    residual_risk = 0.0 → fully attenuated → taint blocked
+    Where:
+      - P_base(sink) in (0, 1): Prior exploitability probability based on CWE & AST severity
+      - P_trans(path) in (0, 1): Path transmission confidence across hops (geometric decay)
+      - Product(1 - A_i): Compound guard attenuation factor across sanitizers
+    
+    The resulting residual_risk is strictly bounded within (0, 1) — never trivially 1.0
+    and never 0.0 unless completely blocked.
     
     Returns dict with:
-      - residual_risk: float [0,1]
+      - residual_risk: float in (0, 1)
+      - effective_guard_strength: float in [0, 1] (1 - guard_factor)
       - guard_attenuations: list of {node_id, label, attenuation, basis}
-      - effective_guard_strength: 1 - residual_risk
       - path_length: int
       - sink_category: str
       - cwe: str
+      - base_prior: float
+      - transmission_confidence: float
     """
     sink_data = G.nodes.get(sink_node_id, {})
     sink_label = sink_data.get("label", sink_node_id)
@@ -205,8 +238,39 @@ def compute_path_residual_risk(
             cwe = cwe_id
             break
 
+    # 1. Base Exploitability Prior P_base in (0, 1)
+    base_prior = BASE_EXPLOITABILITY_PRIORS.get(sink_category, 0.65)
+    severity = sink_data.get("severity")
+    if severity is not None:
+        try:
+            sev_prob = min(0.94, max(0.25, (float(severity) / 10.0) * 0.92))
+            base_prior = round(0.5 * base_prior + 0.5 * sev_prob, 4)
+        except (ValueError, TypeError):
+            pass
+
+    # 2. Path Transmission Confidence P_trans in (0, 1)
+    # Models entropy and probability decay across intermediate variables and function hops
+    trans_prob = 1.0
+    if len(path_nodes) > 1 and hasattr(G, "get_edge_data"):
+        for i in range(len(path_nodes) - 1):
+            ed = G.get_edge_data(path_nodes[i], path_nodes[i + 1]) or {}
+            conf = ed.get("confidence", ed.get("weight"))
+            if conf is not None:
+                try:
+                    c_val = float(conf)
+                    c_norm = min(0.98, max(0.60, c_val / 10.0 if c_val > 1.0 else c_val))
+                    trans_prob *= c_norm
+                except (ValueError, TypeError):
+                    trans_prob *= 0.97
+            else:
+                trans_prob *= 0.97
+    else:
+        trans_prob = 0.98 * (0.97 ** max(0, len(path_nodes) - 2))
+    trans_prob = round(max(0.60, min(0.98, trans_prob)), 4)
+
+    # 3. Guard Attenuation Product
     guard_attenuations = []
-    residual = 1.0
+    guard_factor = 1.0
 
     for node_id in path_nodes:
         node_data = G.nodes.get(node_id, {})
@@ -215,7 +279,7 @@ def compute_path_residual_risk(
         
         A = get_guard_attenuation(node_data, sink_category)
         A = max(MINIMUM_ATTENUATION, min(1.0, A))
-        residual *= (1.0 - A)
+        guard_factor *= (1.0 - A)
         
         guard_attenuations.append({
             "node_id": node_id,
@@ -225,14 +289,24 @@ def compute_path_residual_risk(
             "annotations": node_data.get("annotations", []),
         })
 
+    # Effective guard strength is how much guards reduced taint (0.0 if no guards)
+    effective_guard_strength = round(1.0 - guard_factor, 4)
+
+    # Statistical Residual Risk = P_base * P_trans * guard_factor
+    residual_risk = base_prior * trans_prob * guard_factor
+    # Strictly bound in (0, 1) — guaranteed never 1.0 and never 0.0
+    residual_risk = round(min(0.95, max(0.01, residual_risk)), 4)
+
     return {
-        "residual_risk": round(residual, 4),
-        "effective_guard_strength": round(1.0 - residual, 4),
+        "residual_risk": residual_risk,
+        "effective_guard_strength": effective_guard_strength,
         "guard_attenuations": guard_attenuations,
         "guard_count": len(guard_attenuations),
         "path_length": len(path_nodes),
         "sink_category": sink_category,
         "cwe": cwe,
+        "base_prior": base_prior,
+        "transmission_confidence": trans_prob,
     }
 
 

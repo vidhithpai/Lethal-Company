@@ -114,6 +114,7 @@ let _currentRepoPath   = null;
 let _currentGitRoot    = null;
 let _taintTreeProvider = null;
 let _codeLensProvider  = null;
+let _pinnedProjectPath = null;   // Explicitly chosen project path — set via "VulnGraph: Select Project & Scan"
 
 // ── Robust Path Matching Helper (Cross-Platform / Windows-Safe) ───────────────
 function isSameFile(file1, file2) {
@@ -165,6 +166,10 @@ async function resolveBackendUrl(configured) {
 }
 
 function getWorkspacePath(document) {
+  // PRIORITY 0: Return the explicitly pinned project path set by the user.
+  // This is the most reliable signal — the user has explicitly told us what to scan.
+  if (_pinnedProjectPath) return _pinnedProjectPath;
+
   // PRIMARY: walk up from the open file to find .git root
   // This gives TDRA the actual git repository — critical for real commits
   const startDir = document
@@ -192,11 +197,8 @@ function getWorkspacePath(document) {
   }
 
   // SECONDARY: use VS Code workspace folder
-  // But verify it's not the VulnGraph tool directory itself
   if (vscode.workspace.workspaceFolders?.length > 0) {
-    const wsRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
-    // Return the workspace root — NOT any subfolder like demo_project
-    return wsRoot;
+    return vscode.workspace.workspaceFolders[0].uri.fsPath;
   }
 
   if (document) return path.dirname(document.uri.fsPath);
@@ -294,9 +296,11 @@ async function analyzeProject(projectPath, backendUrl, notifyUser = false) {
   const sinksCount = scanData.sinks || 0;
   const pathsCount = _lastAttackPaths.length;
   const nodesCount = scanData.nodes || graphData.nodes?.length || 0;
+  // Show pinned project name in brackets so the user knows what is being scanned
+  const pinnedTag = _pinnedProjectPath ? ` [${path.basename(_pinnedProjectPath)}]` : '';
 
   setStatus(
-    `$(shield) VulnGraph: ${sourcesCount} src | ${sinksCount} sinks | ${pathsCount} paths`,
+    `$(shield) VulnGraph${pinnedTag}: ${sourcesCount} src | ${sinksCount} sinks | ${pathsCount} paths`,
     `VulnGraph Scan Complete for ${projectName}\n` +
     `- Total AST Nodes: ${nodesCount}\n` +
     `- Input Sources (Entry): ${sourcesCount}\n` +
@@ -351,7 +355,8 @@ async function analyzeFile(document) {
 
   const { backendUrl: configuredUrl } = getConfig();
   const backendUrl = await resolveBackendUrl(configuredUrl);
-  const projectPath = getWorkspacePath(document);
+  // Use the pinned project path if set, otherwise fall back to document-based detection
+  const projectPath = _pinnedProjectPath || getWorkspacePath(document);
   if (!projectPath) return;
 
   try {
@@ -386,7 +391,8 @@ async function analyzeFile(document) {
 async function autoScanWorkspace() {
   const { backendUrl: configuredUrl } = getConfig();
   const backendUrl = await resolveBackendUrl(configuredUrl);
-  const projectPath = getWorkspacePath(vscode.window.activeTextEditor?.document);
+  // Use the pinned project path if set, otherwise fall back to active editor detection
+  const projectPath = _pinnedProjectPath || getWorkspacePath(vscode.window.activeTextEditor?.document);
   if (!projectPath) return;
 
   try {
@@ -842,8 +848,8 @@ function generateCallGraphSvg(graph, attackPaths) {
   // Extract call links and attack path links
   const callEdges = links.filter(l => l.kind === 'call' || l.kind === 'dataflow');
 
-  if (callEdges.length === 0 && (!attackPaths || attackPaths.length === 0)) {
-    return `<div style="padding:24px;text-align:center;color:#8B949E;font-size:12px">No inter-function call flows detected in this codebase.</div>`;
+  if (nodes.length === 0 || (callEdges.length === 0 && (!attackPaths || attackPaths.length === 0))) {
+    return `<div style="padding:24px;text-align:center;color:#8B949E;font-size:12px">No inter-procedural call flows detected. Run a workspace scan or save a file to inspect call graphs.</div>`;
   }
 
   const flows = (attackPaths || []).slice(0, 6).map((p, pIdx) => {
@@ -929,7 +935,7 @@ function generateCallGraphSvg(graph, attackPaths) {
 // ── SVG Attenuation Waterfall Generator ───────────────────────────────────────
 function generateWaterfallSvg(attackPaths) {
   if (!attackPaths || attackPaths.length === 0) {
-    return `<div style="padding:24px;text-align:center;color:#8B949E;font-size:12px">No attack paths available for attenuation waterfall analysis.</div>`;
+    return `<div style="padding:24px;text-align:center;color:#8B949E;font-size:12px">No attack paths available for attenuation waterfall analysis. Save a file or run workspace scan to analyze.</div>`;
   }
 
   const svgCharts = attackPaths.slice(0, 5).map((p, idx) => {
@@ -1023,7 +1029,7 @@ function generateMatrixSvg(graph, timeline) {
   const files = Array.from(fileSet).slice(0, 10);
 
   if (files.length === 0) {
-    return `<div style="padding:24px;text-align:center;color:#8B949E;font-size:12px">No file dependencies available for coupling matrix.</div>`;
+    return `<div style="padding:24px;text-align:center;color:#8B949E;font-size:12px">No file dependencies available for coupling matrix. Save a file or run workspace scan to analyze.</div>`;
   }
 
   const matrix = {};
@@ -1134,6 +1140,12 @@ function refreshRiskPanel() {
 
   const timeline = _lastTimeline?.timeline || [];
   const sinks = (_lastGraph?.nodes || []).filter(n => n.type === 'sink');
+  const sources = (_lastGraph?.nodes || []).filter(n => n.type === 'source');
+  const isScanned = _lastScanData != null || (_lastGraph != null && (_lastGraph.nodes || []).length > 0);
+  const scannedNodesCount = _lastScanData?.nodes != null ? _lastScanData.nodes : (_lastGraph?.nodes?.length || 0);
+  const sourcesCount = _lastScanData?.sources != null ? _lastScanData.sources : sources.length;
+  const sinksCount = _lastScanData?.sinks != null ? _lastScanData.sinks : sinks.length;
+  const pathsCount = _lastAttackPaths?.length || 0;
 
   const RF_COLOR = rf => {
     if (rf >= 0.7) return '#FF4444';
@@ -1193,12 +1205,47 @@ function refreshRiskPanel() {
   const criticalCount = timeline.filter(c => (c.risk_factor || 0) >= 0.7).length;
   const newPathsTotal = timeline.reduce((a, c) => a + (c.new_attack_paths || 0), 0);
   const guardEvents   = timeline.reduce((a, c) => a + (c.guard_weakening_events || 0), 0);
-  const avgRF         = timeline.length
-    ? (timeline.reduce((a, c) => a + (c.risk_factor || 0), 0) / timeline.length).toFixed(3) : '—';
+
+  // Avg RF score: prefer residual risk from attack paths (always populated after scan).
+  // Fall back to TDRA timeline RF only when no attack paths are available.
+  // Timeline RF can be 0.0 for every commit when the differential engine hasn't
+  // analyzed Python/Java diffs against the scanned project — that looks like a broken "0.000".
+  const pathsForAvg = (_lastAttackPaths || []).filter(p => p.residual_risk != null);
+  const timelineForAvg = timeline.filter(c => (c.risk_factor || 0) > 0);
+
+  let avgRF, avgRFRaw, avgRFSource;
+  if (pathsForAvg.length > 0) {
+    avgRFRaw = pathsForAvg.reduce((a, p) => a + (p.residual_risk || 0), 0) / pathsForAvg.length;
+    avgRF = avgRFRaw.toFixed(3);
+    avgRFSource = 'path';
+  } else if (timelineForAvg.length > 0) {
+    avgRFRaw = timelineForAvg.reduce((a, c) => a + (c.risk_factor || 0), 0) / timelineForAvg.length;
+    avgRF = avgRFRaw.toFixed(3);
+    avgRFSource = 'timeline';
+  } else if (timeline.length > 0) {
+    // All timeline RF values are 0 — show 0.000 explicitly rather than —
+    avgRFRaw = 0;
+    avgRF = '0.000';
+    avgRFSource = 'timeline';
+  } else {
+    avgRFRaw = null;
+    avgRF = '—';
+    avgRFSource = 'none';
+  }
+  const avgRFColor = avgRFRaw == null ? '#8B949E'
+    : avgRFRaw >= 0.7 ? '#FF4444'
+    : avgRFRaw >= 0.45 ? '#FF9500'
+    : avgRFRaw >= 0.2 ? '#FFD700'
+    : '#1D9E75';
+  const avgRFLabel = avgRFSource === 'path' ? 'Avg Residual Risk' : 'Avg RF Score';
   const srcReason     = _lastTimeline?.reason || '';
-  const srcLabel      = _lastTimeline?.source === 'live'
-    ? '🟢 LIVE'
-    : `🟡 DEMO${srcReason ? ' — ' + srcReason : ''}`;
+  let srcLabel = '⚪ NOT SCANNED';
+  if (isScanned && scannedNodesCount > 0) {
+    srcLabel = _lastTimeline?.source === 'live'
+      ? '🟢 LIVE'
+      : (_lastTimeline?.source === 'mock' ? `🟡 DEMO${srcReason ? ' — ' + srcReason : ''}` : '🟢 LIVE');
+  }
+
   const scannedFolder = _currentRepoPath ? path.basename(_currentRepoPath) : 'Active Workspace';
 
   const callGraphHtml = generateCallGraphSvg(_lastGraph, _lastAttackPaths);
@@ -1259,7 +1306,7 @@ function refreshRiskPanel() {
     </div>
   </div>
   <div style="display:flex;gap:8px;align-items:center">
-    <span class="src">[${srcLabel} DATA] · ${_lastScanData?.nodes || 0} nodes scanned</span>
+    <span class="src">[${srcLabel}] · ${scannedNodesCount} nodes scanned</span>
     <button class="btn" onclick="open3D()">3D View</button>
     <button class="btn btn-primary" onclick="exportReport()">Export Report</button>
   </div>
@@ -1271,20 +1318,20 @@ function refreshRiskPanel() {
     <div class="stat-l">Critical commits</div>
   </div>
   <div class="stat">
-    <div class="stat-n" style="color:#FF9500">${_lastAttackPaths.length || newPathsTotal}</div>
+    <div class="stat-n" style="color:#FF9500">${pathsCount}</div>
     <div class="stat-l">Attack paths</div>
   </div>
   <div class="stat">
-    <div class="stat-n" style="color:#00E676">${_lastScanData?.sources || 0}</div>
+    <div class="stat-n" style="color:#00E676">${sourcesCount}</div>
     <div class="stat-l">Entry sources</div>
   </div>
   <div class="stat">
-    <div class="stat-n" style="color:#FF4444">${sinks.length}</div>
+    <div class="stat-n" style="color:#FF4444">${sinksCount}</div>
     <div class="stat-l">Sink nodes</div>
   </div>
   <div class="stat">
-    <div class="stat-n" style="color:#8B949E">${avgRF}</div>
-    <div class="stat-l">Avg RF score</div>
+    <div class="stat-n" style="color:${avgRFColor}">${avgRF}</div>
+    <div class="stat-l">${avgRFLabel}</div>
   </div>
 </div>
 
@@ -1304,7 +1351,7 @@ function refreshRiskPanel() {
       <th>Commit</th><th>Message</th><th>Author</th>
       <th>Severity</th><th>Risk Factor</th><th>Detail</th>
     </tr></thead>
-    <tbody>${commitRows || '<tr><td colspan="6" style="text-align:center;color:#6E7681;padding:20px">No commit data. Scan a project first.</td></tr>'}</tbody>
+    <tbody>${commitRows || '<tr><td colspan="6" style="text-align:center;color:#6E7681;padding:20px">No commit data. Save a file or run workspace scan to analyze.</td></tr>'}</tbody>
   </table>
 </div>
 
@@ -1316,7 +1363,7 @@ function refreshRiskPanel() {
       <th>Sink</th><th>Location</th><th>CWE</th>
       <th>Residual risk</th><th>Guard strength</th>
     </tr></thead>
-    <tbody>${sinkRows || '<tr><td colspan="5" style="text-align:center;color:#6E7681;padding:20px">No sinks found. Scan a project first.</td></tr>'}</tbody>
+    <tbody>${sinkRows || '<tr><td colspan="5" style="text-align:center;color:#6E7681;padding:20px">No sinks found. Save a file or run workspace scan to analyze.</td></tr>'}</tbody>
   </table>
 </div>
 
@@ -1495,19 +1542,28 @@ function openRiskPanel(context) {
     }
   });
 
+  refreshRiskPanel();
   if (!_lastGraph) {
     autoScanWorkspace().then(() => refreshRiskPanel()).catch(() => refreshRiskPanel());
-  } else {
-    refreshRiskPanel();
   }
 }
 
 // ── Extension Activation ──────────────────────────────────────────────────────
 function activate(context) {
+  // Restore pinned project path from previous VS Code session
+  const savedPinned = context.workspaceState.get('vulngraph.pinnedProjectPath');
+  if (savedPinned && fs.existsSync(savedPinned)) {
+    _pinnedProjectPath = savedPinned;
+    console.log(`[VulnGraph] Restored pinned project: ${_pinnedProjectPath}`);
+  }
+
   // 1. Status Bar Item
   _statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-  _statusBarItem.text = '$(shield) VulnGraph';
-  _statusBarItem.tooltip = 'VulnGraph security analyzer — click to open dashboard';
+  const restoredTag = _pinnedProjectPath ? ` [${path.basename(_pinnedProjectPath)}]` : '';
+  _statusBarItem.text = `$(shield) VulnGraph${restoredTag}`;
+  _statusBarItem.tooltip = _pinnedProjectPath
+    ? `VulnGraph — scanning: ${_pinnedProjectPath}\nClick to open dashboard`
+    : 'VulnGraph security analyzer — click to open dashboard\nTip: Run "VulnGraph: Select Project & Scan" to pin a project folder';
   _statusBarItem.command = 'vulngraph.openDashboard';
   _statusBarItem.show();
   context.subscriptions.push(_statusBarItem);
@@ -1536,6 +1592,56 @@ function activate(context) {
 
   // 5. Command Registrations
   context.subscriptions.push(
+    // ── NEW: Select Project & Scan ─────────────────────────────────────────────
+    // Lets the user explicitly pick any Python or Java project folder on disk.
+    // All subsequent scans (auto-save, dashboard, workspace) target that folder.
+    vscode.commands.registerCommand('vulngraph.selectProject', async () => {
+      const picked = await vscode.window.showOpenDialog({
+        canSelectFiles: false,
+        canSelectFolders: true,
+        canSelectMany: false,
+        openLabel: 'Select Project to Scan',
+        title: 'VulnGraph: Select Python / Java Project Folder',
+      });
+      if (!picked || picked.length === 0) return;
+
+      const selectedPath = picked[0].fsPath;
+      _pinnedProjectPath = selectedPath;
+      // Persist across VS Code sessions
+      context.workspaceState.update('vulngraph.pinnedProjectPath', selectedPath);
+
+      const projectName = path.basename(selectedPath);
+      _statusBarItem.text = `$(sync~spin) VulnGraph [${projectName}]: scanning...`;
+      _statusBarItem.tooltip = `VulnGraph — scanning: ${selectedPath}`;
+
+      const { backendUrl: configuredUrl } = getConfig();
+      const backendUrl = await resolveBackendUrl(configuredUrl);
+
+      try {
+        const { graphData } = await analyzeProject(selectedPath, backendUrl, true);
+        const activeEditor = vscode.window.activeTextEditor;
+        if (activeEditor) applyDecorations(activeEditor.document, graphData);
+        if (_riskPanel) refreshRiskPanel();
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          `VulnGraph: Could not scan "${projectName}". Is the backend running at ${backendUrl}?\n${err.message}`
+        );
+        setStatus('$(warning) VulnGraph: backend offline',
+          `Cannot reach backend at ${backendUrl}.\nRun: .\\venv\\Scripts\\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8002 --reload`);
+      }
+    }),
+
+    // ── NEW: Clear Selected Project ────────────────────────────────────────────
+    vscode.commands.registerCommand('vulngraph.clearProject', () => {
+      _pinnedProjectPath = null;
+      context.workspaceState.update('vulngraph.pinnedProjectPath', undefined);
+      _statusBarItem.text = '$(shield) VulnGraph';
+      _statusBarItem.tooltip = 'VulnGraph security analyzer — click to open dashboard\nTip: Run "VulnGraph: Select Project & Scan" to pin a project folder';
+      vscode.window.showInformationMessage(
+        'VulnGraph: Pinned project cleared. Auto-detection is now active.'
+      );
+    }),
+
     vscode.commands.registerCommand('vulngraph.analyzeFile', () => {
       const doc = vscode.window.activeTextEditor?.document;
       if (doc) {

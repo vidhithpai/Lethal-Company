@@ -109,7 +109,7 @@ const App = () => {
       
       if (res.ok) {
         const scanRes = await res.json();
-        const scannedPath = scanRes.project_path || folderName;
+        const scannedPath = scanRes.git_root || scanRes.project_path || folderName;
         console.log("[Scan] Actual scanned project_path:", scannedPath);
         setRepoPath(scannedPath);
 

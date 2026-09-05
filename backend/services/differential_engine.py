@@ -14,27 +14,45 @@ from .guard_attenuation import (
 from backend.services.depth_budget import compute_depth_budget
 
 
+from backend.services.git_history import find_git_root
+
+
 class DifferentialEngine:
     def __init__(self, repo_path: str):
-        self.repo_path = str(Path(repo_path).resolve())
-        self.repo = git.Repo(self.repo_path)
+        git_root = find_git_root(repo_path)
+        if git_root:
+            self.repo_path = git_root
+        else:
+            self.repo_path = str(Path(repo_path).resolve())
+        self.repo = git.Repo(self.repo_path, search_parent_directories=True)
         self._graph_cache: dict[str, nx.DiGraph] = {}
 
-    def get_commit_pairs(self, limit: int = 50) -> list[tuple[str, str]]:
+    def get_commit_pairs(self, limit: int = 50) -> list[tuple[str | None, str]]:
         """Returns list of (parent_hash, commit_hash) tuples, newest first."""
         try:
             commits = list(self.repo.iter_commits(max_count=limit))
-        except (git.exc.GitCommandError, ValueError):
+        except (git.exc.GitCommandError, ValueError, Exception):
             return []
-        if len(commits) < 2:
+        if not commits:
             return []
-        return [(commits[i + 1].hexsha, commits[i].hexsha) for i in range(len(commits) - 1)]
+        pairs = []
+        for i in range(len(commits) - 1):
+            pairs.append((commits[i + 1].hexsha, commits[i].hexsha))
+        # Include root/initial commit with parent None
+        pairs.append((None, commits[-1].hexsha))
+        return pairs
 
-    def get_diff_changed_files(self, parent_hash: str, commit_hash: str) -> list[str]:
+    def get_diff_changed_files(self, parent_hash: str | None, commit_hash: str) -> list[str]:
         """
         Uses git diff to get only the files changed between parent and commit.
         Returns list of absolute file paths that were added or modified.
         """
+        if not parent_hash:
+            try:
+                commit_obj = self.repo.commit(commit_hash)
+                return [str(Path(self.repo_path) / item.path) for item in commit_obj.tree.traverse() if item.type == 'blob']
+            except Exception:
+                return []
         try:
             result = subprocess.run(
                 ["git", "diff", "--name-only", "--diff-filter=AM",
@@ -43,15 +61,17 @@ class DifferentialEngine:
             )
             changed = [f.strip() for f in result.stdout.strip().splitlines() if f.strip()]
             return [str(Path(self.repo_path) / f) for f in changed]
-        except subprocess.CalledProcessError:
+        except Exception:
             return []
 
-    def get_diff_hunks(self, parent_hash: str, commit_hash: str) -> dict[str, str]:
+    def get_diff_hunks(self, parent_hash: str | None, commit_hash: str) -> dict[str, str]:
         """
         Returns {filepath: unified_diff_text} for all changed files.
         This is the raw git diff output per file — used to identify
         which methods were added or modified in the commit.
         """
+        if not parent_hash:
+            return {}
         try:
             result = subprocess.run(
                 ["git", "diff", "-U3", parent_hash, commit_hash],
@@ -163,6 +183,9 @@ class DifferentialEngine:
         Returns a set of ORDERED tuples, each representing one distinct
         source->sink path.
         """
+        if not G or len(G) == 0:
+            return set()
+
         # Compute adaptive budget
         budget = compute_depth_budget(G)
         
@@ -198,6 +221,8 @@ class DifferentialEngine:
         """
         Returns {path_tuple: effective_guard_strength}.
         """
+        if not G or not reachability:
+            return {}
         result = {}
         for path in reachability:
             path_nodes = list(path)
@@ -206,145 +231,204 @@ class DifferentialEngine:
             result[path] = analysis["effective_guard_strength"]
         return result
 
-    def analyze_commit(self, parent_hash: str, commit_hash: str) -> dict:
+    def analyze_commit(self, parent_hash: str | None, commit_hash: str) -> dict:
         """
         Core TDRA differential analysis.
         Uses git diff to scope analysis to changed files only.
-        Falls back to full clone if diff is empty.
+        Supports parent_hash=None for root commits.
         """
-        # Get changed files via git diff
-        changed_files = self.get_diff_changed_files(parent_hash, commit_hash)
-        diff_hunks = self.get_diff_hunks(parent_hash, commit_hash)
-        
-        if changed_files:
-            # Fast path: build graph only for changed files at each version
-            # For parent: get the PARENT version of changed files
-            parent_tmp = tempfile.mkdtemp(prefix="tdra_parent_")
-            curr_tmp = tempfile.mkdtemp(prefix="tdra_curr_")
-            try:
-                # Extract changed files at parent commit
-                parent_changed = []
-                curr_changed = []
-                for rel_path in changed_files:
-                    try:
-                        rel = str(Path(rel_path).relative_to(self.repo_path))
-                    except ValueError:
-                        rel = Path(rel_path).name
-                    
-                    # Parent version
-                    p_out = Path(parent_tmp) / rel
-                    p_out.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        p_res = subprocess.run(
-                            ["git", "show", f"{parent_hash}:{rel}"],
-                            capture_output=True,
-                            cwd=self.repo_path, check=True
-                        )
-                        p_content = p_res.stdout.decode("utf-8", errors="replace")
-                        p_out.write_text(p_content, encoding="utf-8", errors="replace")
-                        parent_changed.append(str(p_out))
-                    except subprocess.CalledProcessError:
-                        pass  # new file, doesn't exist in parent
+        try:
+            commit_obj = self.repo.commit(commit_hash)
+            # Get changed files via git diff
+            changed_files = self.get_diff_changed_files(parent_hash, commit_hash)
+            diff_hunks = self.get_diff_hunks(parent_hash, commit_hash) if parent_hash else {}
+            
+            if parent_hash and changed_files:
+                parent_tmp = tempfile.mkdtemp(prefix="tdra_parent_")
+                curr_tmp = tempfile.mkdtemp(prefix="tdra_curr_")
+                try:
+                    parent_changed = []
+                    curr_changed = []
+                    for rel_path in changed_files:
+                        try:
+                            rel = str(Path(rel_path).relative_to(self.repo_path))
+                        except ValueError:
+                            rel = Path(rel_path).name
+                        
+                        # Parent version
+                        p_out = Path(parent_tmp) / rel
+                        p_out.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            p_res = subprocess.run(
+                                ["git", "show", f"{parent_hash}:{rel}"],
+                                capture_output=True,
+                                cwd=self.repo_path, check=True
+                            )
+                            p_content = p_res.stdout.decode("utf-8", errors="replace")
+                            p_out.write_text(p_content, encoding="utf-8", errors="replace")
+                            parent_changed.append(str(p_out))
+                        except subprocess.CalledProcessError:
+                            pass
 
-                    # Current version
-                    c_out = Path(curr_tmp) / rel
-                    c_out.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        c_res = subprocess.run(
-                            ["git", "show", f"{commit_hash}:{rel}"],
-                            capture_output=True,
-                            cwd=self.repo_path, check=True
-                        )
-                        c_content = c_res.stdout.decode("utf-8", errors="replace")
-                        c_out.write_text(c_content, encoding="utf-8", errors="replace")
-                        curr_changed.append(str(c_out))
-                    except subprocess.CalledProcessError:
-                        pass
+                        # Current version
+                        c_out = Path(curr_tmp) / rel
+                        c_out.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            c_res = subprocess.run(
+                                ["git", "show", f"{commit_hash}:{rel}"],
+                                capture_output=True,
+                                cwd=self.repo_path, check=True
+                            )
+                            c_content = c_res.stdout.decode("utf-8", errors="replace")
+                            c_out.write_text(c_content, encoding="utf-8", errors="replace")
+                            curr_changed.append(str(c_out))
+                        except subprocess.CalledProcessError:
+                            pass
 
-                from .code_security_graph import build_graph_for_path
-                from .java_graph_builder import build_java_graph
+                    from .code_security_graph import build_graph_for_path
+                    from .java_graph_builder import build_java_graph
 
-                def build(tmp):
-                    jf = list(Path(tmp).rglob("*.java"))
-                    return build_java_graph(tmp) if jf else build_graph_for_path(tmp)
+                    def build(tmp):
+                        jf = list(Path(tmp).rglob("*.java"))
+                        return build_java_graph(tmp) if jf else build_graph_for_path(tmp)
 
-                G_prev = build(parent_tmp) if parent_changed else nx.DiGraph()
-                G_curr = build(curr_tmp) if curr_changed else nx.DiGraph()
-            finally:
-                shutil.rmtree(parent_tmp, ignore_errors=True)
-                shutil.rmtree(curr_tmp, ignore_errors=True)
-        else:
-            # Fallback to original full-clone approach
-            G_prev = self.build_graph_at_commit(parent_hash)
-            G_curr = self.build_graph_at_commit(commit_hash)
+                    G_prev = build(parent_tmp) if parent_changed else nx.DiGraph()
+                    G_curr = build(curr_tmp) if curr_changed else nx.DiGraph()
+                finally:
+                    shutil.rmtree(parent_tmp, ignore_errors=True)
+                    shutil.rmtree(curr_tmp, ignore_errors=True)
+            elif parent_hash:
+                G_prev = self.build_graph_at_commit(parent_hash)
+                G_curr = self.build_graph_at_commit(commit_hash)
+            else:
+                G_prev = nx.DiGraph()
+                curr_tmp = tempfile.mkdtemp(prefix="tdra_curr_root_")
+                try:
+                    for rel_path in changed_files[:50]:
+                        try:
+                            rel = str(Path(rel_path).relative_to(self.repo_path))
+                        except ValueError:
+                            rel = Path(rel_path).name
+                        c_out = Path(curr_tmp) / rel
+                        c_out.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            c_res = subprocess.run(
+                                ["git", "show", f"{commit_hash}:{rel}"],
+                                capture_output=True, cwd=self.repo_path, check=True
+                            )
+                            c_out.write_bytes(c_res.stdout)
+                        except Exception:
+                            pass
+                    from .code_security_graph import build_graph_for_path
+                    from .java_graph_builder import build_java_graph
+                    jf = list(Path(curr_tmp).rglob("*.java"))
+                    G_curr = build_java_graph(curr_tmp) if jf else build_graph_for_path(curr_tmp)
+                finally:
+                    shutil.rmtree(curr_tmp, ignore_errors=True)
 
-        budget = compute_depth_budget(G_curr)
-        R_prev = self.get_reachability_set(G_prev)
-        R_curr = self.get_reachability_set(G_curr)
-        guards_prev = self.get_guard_set(G_prev, R_prev)
-        guards_curr = self.get_guard_set(G_curr, R_curr)
+            budget = compute_depth_budget(G_curr)
+            R_prev = self.get_reachability_set(G_prev)
+            R_curr = self.get_reachability_set(G_curr)
+            guards_prev = self.get_guard_set(G_prev, R_prev)
+            guards_curr = self.get_guard_set(G_curr, R_curr)
 
-        new_paths = R_curr - R_prev
-        shared_paths = R_prev & R_curr
-        
-        guard_weakening = []
-        total_attenuation_drop = 0.0
+            new_paths = R_curr - R_prev
+            shared_paths = R_prev & R_curr
+            
+            guard_weakening = []
+            total_attenuation_drop = 0.0
 
-        for path in shared_paths:
-            A_prev = guards_prev.get(path, 0.0)
-            A_curr = guards_curr.get(path, 0.0)
-            drop = A_prev - A_curr
-            if drop > 0.05:  # threshold: >5% effective guard strength lost
-                guard_weakening.append(path)
-                total_attenuation_drop += drop
+            for path in shared_paths:
+                A_prev = guards_prev.get(path, 0.0)
+                A_curr = guards_curr.get(path, 0.0)
+                drop = A_prev - A_curr
+                if drop > 0.05:  # threshold: >5% effective guard strength lost
+                    guard_weakening.append(path)
+                    total_attenuation_drop += drop
 
-        alpha, beta = 0.6, 0.4
-        p_before = max(len(R_prev), 1)
-        
-        path_expansion_score = len(new_paths) / p_before
-        
-        # Guard component: weighted by magnitude of attenuation drop
-        # If no prior guards, attenuation drop is 0
-        total_prior_attenuation = max(sum(guards_prev.values()), 0.01)
-        guard_regression_score = total_attenuation_drop / total_prior_attenuation
+            alpha, beta = 0.6, 0.4
+            p_before = max(len(R_prev), 1)
+            
+            path_expansion_score = len(new_paths) / p_before
+            
+            total_prior_attenuation = max(sum(guards_prev.values()), 0.01)
+            guard_regression_score = total_attenuation_drop / total_prior_attenuation
 
-        RF = round(
-            alpha * min(path_expansion_score, 1.0) +
-            beta  * min(guard_regression_score, 1.0),
-            4
-        )
-        RF = min(RF, 1.0)
+            RF = round(
+                alpha * min(path_expansion_score, 1.0) +
+                beta  * min(guard_regression_score, 1.0),
+                4
+            )
+            RF = min(RF, 1.0)
 
-        if RF < 0.2: severity = "Low"
-        elif RF < 0.45: severity = "Medium"
-        elif RF < 0.7: severity = "High"
-        else: severity = "Critical"
+            if RF < 0.2: severity = "Low"
+            elif RF < 0.45: severity = "Medium"
+            elif RF < 0.7: severity = "High"
+            else: severity = "Critical"
 
-        commit_obj = self.repo.commit(commit_hash)
-        return {
-            "commit_hash": commit_hash,
-            "parent_hash": parent_hash,
-            "author": commit_obj.author.name,
-            "date": commit_obj.authored_datetime.isoformat(),
-            "message": commit_obj.message.strip(),
-            "changed_files": [Path(f).name for f in changed_files],
-            "diff_lines_changed": sum(
+            diff_lines_count = sum(
                 len([l for l in d.splitlines() if l.startswith(("+", "-")) 
                      and not l.startswith(("---", "+++"))])
                 for d in diff_hunks.values()
-            ),
-            "new_attack_paths": len(new_paths),
-            "guard_weakening_events": len(guard_weakening),
-            "total_attenuation_drop": round(total_attenuation_drop, 4),
-            "guard_regression_score": round(guard_regression_score, 4),
-            "path_expansion_score": round(path_expansion_score, 4),
-            "paths_before": len(R_prev),
-            "paths_after": len(R_curr),
-            "rf_score": RF,
-            "severity": severity,
-            "new_paths_detail": [list(p)[:8] for p in list(new_paths)[:5]],
-            "analysis_method": "git_diff_scoped" if changed_files else "full_clone",
-            "depth_strategy": budget.strategy,
-            "depth_reason": budget.reason,
-            "depth_used": budget.max_depth,
-        }
+            ) if diff_hunks else 0
+
+            return {
+                "commit_hash": commit_hash,
+                "short_hash": commit_hash[:7],
+                "parent_hash": parent_hash or "",
+                "author": commit_obj.author.name if commit_obj.author else "Unknown",
+                "date": commit_obj.authored_datetime.isoformat() if commit_obj.authored_datetime else "",
+                "message": commit_obj.message.strip() if commit_obj.message else "",
+                "changed_files": [Path(f).name for f in changed_files[:30]],
+                "diff_lines_changed": diff_lines_count,
+                "new_attack_paths": len(new_paths),
+                "guard_weakening_events": len(guard_weakening),
+                "total_attenuation_drop": round(total_attenuation_drop, 4),
+                "guard_regression_score": round(guard_regression_score, 4),
+                "path_expansion_score": round(path_expansion_score, 4),
+                "paths_before": len(R_prev),
+                "paths_after": len(R_curr),
+                "risk_factor": RF,
+                "rf_score": RF,
+                "severity": severity,
+                "new_paths_detail": [list(p)[:8] for p in list(new_paths)[:5]],
+                "analysis_method": "git_diff_scoped" if (parent_hash and changed_files) else "full_commit",
+                "depth_strategy": budget.strategy,
+                "depth_reason": budget.reason,
+                "depth_used": budget.max_depth,
+            }
+        except Exception as e:
+            try:
+                commit_obj = self.repo.commit(commit_hash)
+                author = commit_obj.author.name if commit_obj.author else "Unknown"
+                date_str = commit_obj.authored_datetime.isoformat() if commit_obj.authored_datetime else ""
+                msg = commit_obj.message.strip() if commit_obj.message else ""
+            except Exception:
+                author = "Unknown"
+                date_str = ""
+                msg = ""
+            return {
+                "commit_hash": commit_hash,
+                "short_hash": commit_hash[:7],
+                "parent_hash": parent_hash or "",
+                "author": author,
+                "date": date_str,
+                "message": msg,
+                "changed_files": [],
+                "diff_lines_changed": 0,
+                "new_attack_paths": 0,
+                "guard_weakening_events": 0,
+                "total_attenuation_drop": 0.0,
+                "guard_regression_score": 0.0,
+                "path_expansion_score": 0.0,
+                "paths_before": 0,
+                "paths_after": 0,
+                "risk_factor": 0.0,
+                "rf_score": 0.0,
+                "severity": "Low",
+                "new_paths_detail": [],
+                "analysis_method": "fallback_metadata",
+                "depth_strategy": "fallback",
+                "depth_reason": str(e)[:100],
+                "depth_used": 0,
+            }

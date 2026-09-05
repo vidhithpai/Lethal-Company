@@ -41,9 +41,12 @@ class ValidationRequest(BaseModel):
 
 def _get_analyzed_commit_results(repo_path: str, limit: int) -> tuple[list[dict[str, Any]], DifferentialEngine]:
     now = time.time()
-    cache_key = (repo_path, limit)
+    git_root = find_git_root(repo_path)
+    if not git_root:
+        raise ValueError(f"No git repository found for path: {repo_path}")
+    cache_key = (git_root, limit)
 
-    engine = DifferentialEngine(repo_path)
+    engine = DifferentialEngine(git_root)
     if cache_key in _ANALYSIS_CACHE:
         ts, cached_results = _ANALYSIS_CACHE[cache_key]
         if now - ts < _CACHE_TTL_SECONDS:
@@ -70,10 +73,16 @@ def analyze_repo(req: TDRAAnalyzeRequest):
     if not repo_path:
         raise HTTPException(status_code=400, detail="repo_path is required")
 
+    git_root = find_git_root(repo_path)
+    if not git_root:
+        raise HTTPException(status_code=400, detail=f"No git repository found for path: {repo_path}")
+
     try:
-        results, _ = _get_analyzed_commit_results(repo_path, req.limit)
-        sorted_results = sorted(results, key=lambda x: x.get("risk_factor", 0.0), reverse=True)
+        results, _ = _get_analyzed_commit_results(git_root, req.limit)
+        sorted_results = sorted(results, key=lambda x: x.get("risk_factor", x.get("rf_score", 0.0)), reverse=True)
         return {"results": sorted_results, "total_pairs_analyzed": len(sorted_results)}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"TDRA analysis failed: {str(e)}")
 
@@ -86,17 +95,27 @@ def run_validation(req: ValidationRequest):
     using provided known CVE commit hashes, then runs
     Mann-Whitney U + Cliff's delta.
     """
+    repo_path = (req.repo_path or "").strip()
+    if not repo_path:
+        raise HTTPException(status_code=400, detail="repo_path is required")
+
+    git_root = find_git_root(repo_path)
+    if not git_root:
+        raise HTTPException(status_code=400, detail=f"No git repository found for path: {repo_path}")
+
     try:
-        results, _ = _get_analyzed_commit_results(req.repo_path, req.limit)
-        vcc_scores = [r["risk_factor"] for r in results 
-                      if r["commit_hash"] in req.known_vcc_hashes
-                      or r["commit_hash"][:7] in req.known_vcc_hashes]
-        non_vcc_scores = [r["risk_factor"] for r in results
-                          if r["commit_hash"] not in req.known_vcc_hashes
-                          and r["commit_hash"][:7] not in req.known_vcc_hashes]
+        results, _ = _get_analyzed_commit_results(git_root, req.limit)
+        vcc_scores = [r.get("risk_factor", r.get("rf_score", 0.0)) for r in results 
+                      if r.get("commit_hash") in req.known_vcc_hashes
+                      or r.get("commit_hash", "")[:7] in req.known_vcc_hashes]
+        non_vcc_scores = [r.get("risk_factor", r.get("rf_score", 0.0)) for r in results
+                          if r.get("commit_hash") not in req.known_vcc_hashes
+                          and r.get("commit_hash", "")[:7] not in req.known_vcc_hashes]
         report = _validate(vcc_scores, non_vcc_scores)
         report["total_commits_analyzed"] = len(results)
         return report
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -113,8 +132,21 @@ def get_risk_summary(repo_path: str = Query(...), limit: int = Query(20, ge=1, l
     if not repo_path:
         raise HTTPException(status_code=400, detail="repo_path is required")
 
+    git_root = find_git_root(repo_path)
+    if not git_root:
+        return {
+            "total_commits_analyzed": 0,
+            "critical_commits": [],
+            "high_commits": [],
+            "riskiest_commit": None,
+            "avg_risk_factor": 0.0,
+            "total_new_paths_introduced": 0,
+            "total_guard_weakening_events": 0,
+            "source": "no_git",
+        }
+
     try:
-        results, _ = _get_analyzed_commit_results(repo_path, limit)
+        results, _ = _get_analyzed_commit_results(git_root, limit)
         if not results:
             return {
                 "total_commits_analyzed": 0,
@@ -124,15 +156,16 @@ def get_risk_summary(repo_path: str = Query(...), limit: int = Query(20, ge=1, l
                 "avg_risk_factor": 0.0,
                 "total_new_paths_introduced": 0,
                 "total_guard_weakening_events": 0,
+                "source": "live",
             }
 
-        critical_commits = [c for c in results if c.get("risk_factor", 0.0) >= 0.7]
-        high_commits = [c for c in results if 0.45 <= c.get("risk_factor", 0.0) < 0.7]
+        critical_commits = [c for c in results if c.get("risk_factor", c.get("rf_score", 0.0)) >= 0.7]
+        high_commits = [c for c in results if 0.45 <= c.get("risk_factor", c.get("rf_score", 0.0)) < 0.7]
 
-        sorted_by_rf = sorted(results, key=lambda x: x.get("risk_factor", 0.0), reverse=True)
+        sorted_by_rf = sorted(results, key=lambda x: x.get("risk_factor", x.get("rf_score", 0.0)), reverse=True)
         riskiest_commit = sorted_by_rf[0] if sorted_by_rf else None
 
-        total_rf = sum(c.get("risk_factor", 0.0) for c in results)
+        total_rf = sum(c.get("risk_factor", c.get("rf_score", 0.0)) for c in results)
         avg_rf = round(total_rf / len(results), 4)
 
         total_new_paths = sum(c.get("new_attack_paths", 0) for c in results)
@@ -146,7 +179,10 @@ def get_risk_summary(repo_path: str = Query(...), limit: int = Query(20, ge=1, l
             "avg_risk_factor": avg_rf,
             "total_new_paths_introduced": total_new_paths,
             "total_guard_weakening_events": total_guard_weakening,
+            "source": "live",
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to generate risk summary: {str(e)}")
 
@@ -162,12 +198,18 @@ def get_commit_path_contributions(commit_hash: str, repo_path: str = Query(...))
     if not repo_path:
         raise HTTPException(status_code=400, detail="repo_path is required")
 
+    git_root = find_git_root(repo_path)
+    if not git_root:
+        raise HTTPException(status_code=404, detail=f"No git repository found for path: {repo_path}")
+
     try:
-        engine = DifferentialEngine(repo_path)
-        commit_obj = engine.repo.commit(commit_hash)
-        if not commit_obj.parents:
-            raise HTTPException(status_code=400, detail="Commit has no parent commit")
-        parent_hash = commit_obj.parents[0].hexsha
+        engine = DifferentialEngine(git_root)
+        try:
+            commit_obj = engine.repo.commit(commit_hash)
+        except Exception:
+            raise HTTPException(status_code=404, detail=f"Commit hash '{commit_hash}' not found in repository")
+
+        parent_hash = commit_obj.parents[0].hexsha if commit_obj.parents else None
 
         analysis = engine.analyze_commit(parent_hash, commit_hash)
 
@@ -190,13 +232,15 @@ def get_commit_path_contributions(commit_hash: str, repo_path: str = Query(...))
 
         return {
             "commit_hash": commit_hash,
-            "parent_hash": parent_hash,
-            "total_risk_factor": analysis.get("risk_factor", 0.0),
+            "parent_hash": parent_hash or "",
+            "total_risk_factor": analysis.get("risk_factor", analysis.get("rf_score", 0.0)),
             "severity": analysis.get("severity", "Low"),
             "new_attack_paths_count": delta_paths,
             "guard_weakening_events_count": delta_guards,
             "new_paths_contributions": new_paths_contrib,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to compute path contributions: {str(e)}")
 
@@ -207,68 +251,82 @@ def get_commit_analysis(commit_hash: str, repo_path: str = Query(...)):
     GET /api/tdra/commit/{commit_hash}?repo_path=...
     Returns single commit differential security analysis.
     """
+    repo_path = (repo_path or "").strip()
     if not repo_path:
         raise HTTPException(status_code=400, detail="repo_path is required")
 
+    git_root = find_git_root(repo_path)
+    if not git_root:
+        raise HTTPException(status_code=404, detail=f"No git repository found for path: {repo_path}")
+
     try:
-        engine = DifferentialEngine(repo_path)
-        commit_obj = engine.repo.commit(commit_hash)
-        if not commit_obj.parents:
-            raise HTTPException(status_code=400, detail="Commit has no parent commit")
-        parent_hash = commit_obj.parents[0].hexsha
+        engine = DifferentialEngine(git_root)
+        try:
+            commit_obj = engine.repo.commit(commit_hash)
+        except Exception:
+            raise HTTPException(status_code=404, detail=f"Commit hash '{commit_hash}' not found in repository")
+
+        parent_hash = commit_obj.parents[0].hexsha if commit_obj.parents else None
         res = engine.analyze_commit(parent_hash, commit_hash)
         return res
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to analyze commit {commit_hash}: {str(e)}")
 
 
-def get_mock_timeline():
-    return [
-        {
-            "commit_hash": "a1b2c3d4",
-            "author": "dev-team",
-            "date": "2025-01-01",
-            "message": "Initial project setup",
-            "risk_factor": 0.15,
-            "severity": "Low",
-            "new_attack_paths": 0,
-            "guard_weakening_events": 0,
-        },
-        {
-            "commit_hash": "e5f6g7h8",
-            "author": "security-audit",
-            "date": "2025-01-02",
-            "message": "Updated endpoints and dependencies",
-            "risk_factor": 0.42,
-            "severity": "Medium",
-            "new_attack_paths": 1,
-            "guard_weakening_events": 0,
-        }
-    ]
-
-
 @router.get("/timeline")
 async def get_tdra_timeline(repo_path: str = Query(...), limit: int = Query(50)):
-    import os, logging
+    import logging
     logger = logging.getLogger("tdra")
-    
-    git_dir = os.path.join(repo_path, '.git')
-    logger.info(f"TDRA timeline request: repo_path={repo_path} git_exists={os.path.exists(git_dir)}")
-    
-    if not os.path.exists(repo_path):
-        return {"timeline": get_mock_timeline()[:limit], "source": "mock",
-                "reason": f"Path does not exist on server: {repo_path}"}
-    
-    if not os.path.exists(git_dir):
-        return {"timeline": get_mock_timeline()[:limit], "source": "mock",
-                "reason": f"No .git directory at {repo_path}"}
-    
+
+    git_root = find_git_root(repo_path)
+    logger.info(f"TDRA timeline request: repo_path={repo_path} resolved_git_root={git_root}")
+
+    if not git_root:
+        return {
+            "timeline": [],
+            "source": "no_git",
+            "reason": f"No git repository found for {repo_path}",
+        }
+
     try:
-        results, _ = _get_analyzed_commit_results(repo_path, limit)
-        timeline = list(reversed(results))
-        return {"timeline": timeline, "source": "live", "git_root": repo_path}
+        results, _ = _get_analyzed_commit_results(git_root, limit)
+        return {"timeline": results, "source": "live", "git_root": git_root}
     except Exception as e:
         import traceback
         logger.error(f"TDRA analysis error: {e}\n{traceback.format_exc()}")
-        return {"timeline": get_mock_timeline()[:limit], "source": "mock",
-                "reason": f"Analysis error: {str(e)[:150]}"}
+        # Fallback to direct git commit extraction without differential graph calculation
+        try:
+            import git
+            repo = git.Repo(git_root, search_parent_directories=True)
+            commits = []
+            for c in list(repo.iter_commits(max_count=limit)):
+                commits.append({
+                    "commit_hash": c.hexsha,
+                    "short_hash": c.hexsha[:7],
+                    "parent_hash": c.parents[0].hexsha if c.parents else "",
+                    "author": c.author.name if c.author else "Unknown",
+                    "date": c.authored_datetime.isoformat() if c.authored_datetime else "",
+                    "message": c.message.strip() if c.message else "",
+                    "changed_files": [],
+                    "diff_lines_changed": 0,
+                    "new_attack_paths": 0,
+                    "guard_weakening_events": 0,
+                    "risk_factor": 0.0,
+                    "rf_score": 0.0,
+                    "severity": "Low",
+                    "new_paths_detail": [],
+                })
+            return {
+                "timeline": commits,
+                "source": "live",
+                "git_root": git_root,
+                "warning": f"Raw commits loaded (graph analysis warning: {str(e)[:80]})"
+            }
+        except Exception as e2:
+            return {
+                "timeline": [],
+                "source": "no_git",
+                "reason": f"Git read error: {str(e2)[:150]}"
+            }
