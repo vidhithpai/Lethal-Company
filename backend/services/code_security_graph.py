@@ -753,13 +753,36 @@ def build_graph_for_path(project_path: str | Path) -> nx.DiGraph:
 
 
 def get_security_graph(root: Path | None = None) -> dict[str, Any]:
-    repo_root = Path(__file__).resolve().parents[2]
-    default_root = repo_root / "sample_project" / "src"
-    root_dir = (root or _ROOT_OVERRIDE or default_root)
-    if not root_dir.exists():
-        root_dir = repo_root
-
     global _security_graph
+    target_root = root or _ROOT_OVERRIDE
+    if not target_root:
+        with _lock:
+            if _cache["graph"] is not None and _cache["root"] is not None:
+                return _cache["graph"]
+            empty = {
+                "graph": nx.DiGraph(),
+                "nodes": [],
+                "edges": [],
+                "sources": [],
+                "sinks": [],
+                "sanitizers": [],
+            }
+            _security_graph = empty["graph"]
+            return empty
+
+    root_dir = Path(target_root).resolve()
+    if not root_dir.exists():
+        empty = {
+            "graph": nx.DiGraph(),
+            "nodes": [],
+            "edges": [],
+            "sources": [],
+            "sinks": [],
+            "sanitizers": [],
+        }
+        _security_graph = empty["graph"]
+        return empty
+
     with _lock:
         if _cache["graph"] is None or _cache["root"] != str(root_dir):
             from backend.services.java_graph_builder import (
@@ -830,6 +853,11 @@ def find_attack_paths(G, sources, sinks, max_depth=15):
                         / 10.0,
                         4,
                     )
+
+                    if sink in G.nodes:
+                        cur_rr = float(G.nodes[sink].get("residual_risk", 0.0))
+                        if risk > cur_rr:
+                            G.nodes[sink]["residual_risk"] = risk
 
                     paths.append({
                         "path": path,

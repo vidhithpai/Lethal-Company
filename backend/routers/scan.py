@@ -49,45 +49,55 @@ def scan(req: ScanRequest):
 
     # Docker path resolution fallback: if host path is not directly accessible inside Linux container
     if not p.exists() or not p.is_dir():
-        norm_path = project_path.replace("\\", "/")
-        folder_name = Path(norm_path).name
-        cwd = Path.cwd().resolve()
+        from backend.services.git_history import _resolve_candidate_paths
+        candidates = _resolve_candidate_paths(project_path)
+        found = None
+        for cand in candidates:
+            if cand.exists() and cand.is_dir():
+                found = cand
+                break
+            elif cand.exists() and cand.is_file():
+                found = cand.parent
+                break
 
-        # 1. Check if folder_name exists under CWD (e.g. /app/demo_project, /app/sample_project)
-        candidate = cwd / folder_name
-        if candidate.exists() and candidate.is_dir():
-            p = candidate
-        elif cwd.name == folder_name:
-            p = cwd
+        if found:
+            p = found
         else:
-            # 2. Check for matching subpath relative to CWD
-            matched = None
-            parts = [pt for pt in norm_path.split("/") if pt and ":" not in pt]
-            for i in range(len(parts)):
-                sub = cwd.joinpath(*parts[i:])
-                if sub.exists() and sub.is_dir():
-                    matched = sub
-                    break
-            if matched:
-                p = matched
+            norm_path = project_path.replace("\\", "/")
+            folder_name = Path(norm_path).name
+            cwd = Path.cwd().resolve()
+
+            # 1. Check if folder_name exists under CWD
+            candidate = cwd / folder_name
+            if candidate.exists() and candidate.is_dir():
+                p = candidate
+            elif cwd.name == folder_name:
+                p = cwd
             else:
-                # 3. Check if any path segment matches a subfolder in container CWD
-                for part in reversed(parts):
-                    sub_cand = cwd / part
-                    if sub_cand.exists() and sub_cand.is_dir():
-                        matched = sub_cand
+                # 2. Check for matching subpath relative to CWD
+                matched = None
+                parts = [pt for pt in norm_path.split("/") if pt and ":" not in pt]
+                for i in range(len(parts)):
+                    sub = cwd.joinpath(*parts[i:])
+                    if sub.exists() and sub.is_dir():
+                        matched = sub
                         break
                 if matched:
                     p = matched
-                elif (cwd / "demo_project").exists():
-                    p = cwd / "demo_project"
-                elif cwd.exists():
-                    p = cwd
                 else:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"project_path must be an existing directory: {p}",
-                    )
+                    # 3. Check if any path segment matches a subfolder in container CWD
+                    for part in reversed(parts):
+                        sub_cand = cwd / part
+                        if sub_cand.exists() and sub_cand.is_dir():
+                            matched = sub_cand
+                            break
+                    if matched:
+                        p = matched
+                    else:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Project path must be an existing directory: {project_path}",
+                        )
 
     # Trigger a scan (Java or Python pipeline)
     language = detect_project_language(str(p))
@@ -245,6 +255,7 @@ async def scan_upload(
     return {
         "message": f"Uploaded and scanned: {base}",
         "project_path": str(base),
+        "git_root": repo_root,
         "language": language,
         "nodes": len(nodes),
         "edges": len(edges),

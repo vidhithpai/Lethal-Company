@@ -73,29 +73,32 @@ export default function CommitTimeline({ repoPath }) {
         )}
       </div>
 
-      {(timelineSource === "mock" || timelineSource === "fallback_mock") && (
+      {timelineSource === "no_git" && (
         <div style={{
-          padding: "8px 14px", background: "#3D2A0A",
-          borderBottom: "1px solid #FF9500", fontSize: 11,
-          color: "#FF9500"
+          padding: "8px 14px", background: "#161B22",
+          borderBottom: "1px solid #30363D", fontSize: 11,
+          color: "#8B949E"
         }}>
-          ⚠ Demo data — no git history found at this path
+          No git repository detected for this project path.
         </div>
       )}
 
       {/* Commits */}
       <div style={{ flex: 1, overflowY: "auto" }}>
         {commitTimeline.length === 0 && (
-          <div style={{ padding: 16, color: "#666", fontSize: 12 }}>
-            No commits loaded. Scan a git repository first.
+          <div style={{ padding: 16, color: "#8B949E", fontSize: 12 }}>
+            No commit history available for this project.
           </div>
         )}
-        {[...commitTimeline].reverse().map((commit) => {
-          const rf = commit.risk_factor || 0;
+        {commitTimeline.map((commit) => {
+          const rf = commit.risk_factor != null ? commit.risk_factor : (commit.rf_score != null ? commit.rf_score : 0);
           const col = RF_COLOR(rf);
           const isSelected = selectedCommit?.commit_hash === commit.commit_hash;
+          const shortHash = commit.short_hash || commit.commit_hash?.slice(0, 7) || "commit";
+          const dateStr = commit.date ? commit.date.split("T")[0] : "";
+
           return (
-            <div key={commit.commit_hash}
+            <div key={commit.commit_hash || shortHash}
               onClick={() => handleSelectCommit(commit)}
               style={{
                 padding: "10px 14px", borderBottom: "1px solid #21262D",
@@ -107,7 +110,7 @@ export default function CommitTimeline({ repoPath }) {
               {/* Hash + author */}
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
                 <span style={{ color: "#58A6FF", fontSize: 11, fontFamily: "monospace" }}>
-                  {commit.commit_hash?.slice(0, 7)}
+                  {shortHash}
                 </span>
                 <span style={{
                   fontSize: 10, padding: "1px 6px", borderRadius: 3,
@@ -120,7 +123,8 @@ export default function CommitTimeline({ repoPath }) {
 
               {/* Message */}
               <div style={{ color: "#E6EDF3", fontSize: 12, marginBottom: 4,
-                whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                title={commit.message || ""}>
                 {commit.message?.slice(0, 45) || "(no message)"}
               </div>
 
@@ -140,8 +144,8 @@ export default function CommitTimeline({ repoPath }) {
               </div>
 
               {/* Meta */}
-              <div style={{ color: "#666", fontSize: 10, marginTop: 3 }}>
-                {commit.author} · {commit.new_attack_paths || 0} new paths
+              <div style={{ color: "#8B949E", fontSize: 10, marginTop: 3 }}>
+                {commit.author || "Unknown"} {dateStr ? `· ${dateStr}` : ""} · {commit.new_attack_paths || 0} new paths
               </div>
             </div>
           );

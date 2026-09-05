@@ -28,6 +28,8 @@
       ]
     },
     "commands": [
+      { "command": "vulngraph.selectProject",    "title": "VulnGraph: Select Project & Scan",          "icon": "$(folder-opened)" },
+      { "command": "vulngraph.clearProject",     "title": "VulnGraph: Clear Selected Project",         "icon": "$(close)" },
       { "command": "vulngraph.analyzeFile",      "title": "VulnGraph: Analyze Current File",        "icon": "$(shield)" },
       { "command": "vulngraph.analyzeWorkspace",  "title": "VulnGraph: Analyze Workspace",           "icon": "$(search)" },
       { "command": "vulngraph.openDashboard",     "title": "VulnGraph: Open Risk Dashboard",         "icon": "$(graph)" },
@@ -57,6 +59,11 @@
         }
       ],
       "view/title": [
+        {
+          "command": "vulngraph.selectProject",
+          "when": "view == vulngraph.taintView",
+          "group": "navigation"
+        },
         {
           "command": "vulngraph.refreshDataflow",
           "when": "view == vulngraph.taintView",

@@ -13,59 +13,139 @@ from pathlib import Path
 from datetime import datetime
 
 
-def find_git_root(path: str) -> str | None:
-    """Walk up directory tree to find .git folder, with fallback to original repo paths."""
-    print(f"[GIT_CHECK] Checking repo_path: '{path}' for .git")
-    p = Path(path).resolve()
+def _resolve_candidate_paths(raw_path: str) -> list[Path]:
+    """Generate potential filesystem Path candidates for a given path string, handling Windows/Docker path differences."""
+    if not raw_path:
+        return [Path.cwd()]
 
-    # 1. Direct check on p itself (if p has its own .git)
-    if (p / ".git").exists():
-        print(f"[GIT_CHECK] Code path: REAL GIT BLAME (found direct repo at {p})")
-        return str(p)
+    norm = raw_path.strip().replace("\\", "/")
+    candidates = []
 
-    # 2. Extract candidate project folder names from path parts (e.g. pygoat, timetable_management)
-    path_parts = [part for part in Path(path).parts if part and part not in ("/", "\\", "tmp", "vulngraph_uploads", "app")]
-    folder_names = list(dict.fromkeys([p.name] + path_parts[::-1]))
+    # 1. Direct path as-is
+    try:
+        candidates.append(Path(norm).resolve())
+    except Exception:
+        pass
 
-    user_home = Path.home()
-    curr = Path.cwd()
+    # 2. If it's a Windows drive path on Linux (e.g., C:/Users/... or c:\Users\...)
+    if len(norm) >= 2 and norm[1] == ":" and norm[0].isalpha():
+        drive = norm[0].lower()
+        rest = norm[2:].lstrip("/")
+        docker_candidates = [
+            Path(f"/host/{drive}/{rest}"),
+            Path(f"/mnt/{drive}/{rest}"),
+            Path(f"/{drive}/{rest}"),
+        ]
+        for dc in docker_candidates:
+            try:
+                candidates.append(dc.resolve())
+            except Exception:
+                pass
 
-    for fname in folder_names:
-        if not fname or fname.endswith(".py") or fname.endswith(".java") or fname.endswith(".js"):
+    # 3. Path relative to current working directory
+    try:
+        candidates.append((Path.cwd() / norm.lstrip("/")).resolve())
+    except Exception:
+        pass
+
+    return candidates
+
+
+def find_git_root(path: str | None) -> str | None:
+    """
+    Find .git repository root for the given path.
+    Searches candidate paths, parent directories, GitPython auto-discovery,
+    and host/workspace folders.
+    """
+    if not path:
+        path = str(Path.cwd())
+
+    print(f"[GIT_CHECK] Finding git root for repo_path: '{path}'")
+    candidates = _resolve_candidate_paths(path)
+
+    # Check each candidate
+    for p in candidates:
+        if not p.exists():
             continue
 
-        candidates = [
-            curr / fname,
-            curr.parent / fname,
-            curr.parent / "Demorep" / fname,
-            curr.parent / "MajorProject" / "Demorep" / fname,
-            user_home / "Documents" / "Projects" / fname,
-            user_home / "Documents" / "Projects" / "Demorep" / fname,
-            user_home / "Documents" / "Projects" / "MajorProject" / "Demorep" / fname,
-            user_home / "Projects" / fname,
-            user_home / "Projects" / "Demorep" / fname,
-        ]
+        target_dir = p if p.is_dir() else p.parent
 
-        for cand in candidates:
-            try:
-                cand_resolved = cand.resolve()
-                dot_git = cand_resolved / ".git"
-                if cand_resolved.exists() and dot_git.exists():
-                    print(f"[GIT_CHECK] Found fallback repo matching '{fname}' with .git at '{cand_resolved}'")
-                    print(f"[GIT_CHECK] Code path: REAL GIT BLAME (fallback to original local path '{cand_resolved}')")
-                    return str(cand_resolved)
-            except Exception:
+        # 1. Direct .git check
+        if (target_dir / ".git").exists():
+            print(f"[GIT_CHECK] Found direct git repo at '{target_dir}'")
+            return str(target_dir)
+
+        # 2. Try GitPython search_parent_directories
+        try:
+            import git
+            repo = git.Repo(str(target_dir), search_parent_directories=True)
+            if repo.working_dir:
+                print(f"[GIT_CHECK] GitPython discovered git repo at '{repo.working_dir}'")
+                return str(repo.working_dir)
+        except Exception:
+            pass
+
+        # 3. Manual parent walk
+        for parent in list(target_dir.parents):
+            if (parent / ".git").exists():
+                print(f"[GIT_CHECK] Found parent git repo at '{parent}'")
+                return str(parent)
+
+    # 4. If path was an uploaded project folder (e.g. /tmp/vulngraph_uploads/<name>)
+    # or a subfolder name, search candidate project folders
+    norm_parts = [part for part in Path(path).parts if part and part not in ("/", "\\", "tmp", "vulngraph_uploads", "app")]
+    folder_names = list(dict.fromkeys(norm_parts[::-1]))
+
+    curr = Path.cwd().resolve()
+    user_home = Path.home()
+
+    search_roots = [
+        curr,
+        curr.parent,
+        Path("/host/c"),
+        Path("/mnt/c"),
+        user_home,
+        user_home / "Documents",
+        user_home / "Downloads",
+        user_home / "Projects",
+    ]
+
+    for fname in folder_names:
+        if not fname or any(fname.endswith(ext) for ext in (".py", ".java", ".js", ".ts", ".html")):
+            continue
+
+        for sroot in search_roots:
+            if not sroot.exists():
                 continue
+            cand = sroot / fname
+            if cand.exists():
+                if (cand / ".git").exists():
+                    print(f"[GIT_CHECK] Found project match with git repo at '{cand}'")
+                    return str(cand)
+                try:
+                    import git
+                    repo = git.Repo(str(cand), search_parent_directories=True)
+                    if repo.working_dir:
+                        print(f"[GIT_CHECK] Found project match git repo at '{repo.working_dir}'")
+                        return str(repo.working_dir)
+                except Exception:
+                    pass
 
-    # 3. Walk up parent directory tree as final fallback
-    for parent in list(p.parents):
-        dot_git = parent / ".git"
-        if dot_git.exists():
-            print(f"[GIT_CHECK] Code path: REAL GIT BLAME (found parent repo at {parent})")
-            return str(parent)
+    # 5. Final fallback to CWD's git root if it exists
+    try:
+        import git
+        repo = git.Repo(str(curr), search_parent_directories=True)
+        if repo.working_dir:
+            print(f"[GIT_CHECK] Fallback to CWD git repo at '{repo.working_dir}'")
+            return str(repo.working_dir)
+    except Exception:
+        pass
 
-    print(f"[GIT_CHECK] No .git folder found for '{path}' or its fallback candidates.")
-    print(f"[GIT_CHECK] Code path: NO GIT HISTORY AVAILABLE")
+    if (curr / ".git").exists():
+        print(f"[GIT_CHECK] Fallback to CWD direct .git at '{curr}'")
+        return str(curr)
+
+    print(f"[GIT_CHECK] No .git folder found for '{path}'")
     return None
 
 
