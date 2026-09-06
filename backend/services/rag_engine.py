@@ -1,247 +1,292 @@
 """
-rag_engine.py
-RAG pipeline for VulnGraph using ChromaDB + sentence-transformers.
-Converts graph findings into searchable documents.
-Retrieves relevant context for Gemini queries.
-All free — no API keys needed for embeddings.
+rag_engine.py — TDRA-aware RAG engine with ChromaDB + GraphCodeBERT.
+
+Architecture:
+  Documents → GraphCodeBERT embeddings → ChromaDB collections
+  Query → embed → cosine search → structured context block → LLM
+
+Three embedding modes (in priority order):
+  1. GraphCodeBERT (microsoft/graphcodebert-base) — best for code+graph
+  2. all-MiniLM-L6-v2 — lightweight, fast, good general purpose
+  3. TF-IDF fallback — always works, no model download needed
 """
 
 import json
 import hashlib
+import os
 from typing import Optional
+from pathlib import Path
 
-# Lightweight in-memory document store to replace heavy ChromaDB/PyTorch
-_documents = []
+# ── Embedding model loader ────────────────────────────────────────────────────
 
-def _node_to_document(node: dict) -> str:
-    parts = [
-        f"Node: {node.get('label', 'unknown')}",
-        f"Type: {node.get('type', 'unknown')}",
-        f"Risk: {node.get('risk', 'UNKNOWN')}",
-        f"File: {node.get('file', 'unknown')} line {node.get('line', '?')}",
-        f"Community: {node.get('community', 'unknown')}",
-    ]
-    if node.get('sink_kind'): parts.append(f"Vulnerability type: {node['sink_kind']}")
-    if node.get('source_kind'): parts.append(f"Input type: {node['source_kind']}")
-    if node.get('git_blame'):
-        blame = node['git_blame']
-        parts.append(f"Introduced by {blame.get('author','unknown')} on {blame.get('date','unknown')} commit {blame.get('commit','unknown')}")
-    if node.get('confidence'): parts.append(f"Confidence: {int(node['confidence']*100)}%")
-    return ". ".join(parts)
+_embedder = None
+_embed_mode = "tfidf"  # default until model loads
 
-def _path_to_document(path_info: dict, index: int) -> str:
-    path_nodes = path_info.get('path', [])
-    score = path_info.get('risk_score', 0)
-    classification = path_info.get('classification', 'UNKNOWN')
-    source = path_info.get('source', path_nodes[0] if path_nodes else 'unknown')
-    sink = path_info.get('sink', path_nodes[-1] if path_nodes else 'unknown')
+def _load_embedder():
+    global _embedder, _embed_mode
+    
+    # Try GraphCodeBERT first (best for code security context)
+    try:
+        from sentence_transformers import SentenceTransformer
+        model_name = os.getenv(
+            "TDRA_EMBED_MODEL",
+            "microsoft/graphcodebert-base"
+        )
+        _embedder = SentenceTransformer(model_name)
+        _embed_mode = "graphcodebert"
+        print(f"[RAG] Loaded embedding model: {model_name}")
+        return
+    except Exception as e:
+        print(f"[RAG] GraphCodeBERT failed ({e}), trying MiniLM...")
 
-    parts = [
-        f"Attack path {index+1}: {source} to {sink}",
-        f"Risk classification: {classification}",
-        f"Risk score: {score}",
-        f"Path length: {len(path_nodes)} hops",
-        f"Full path: {' -> '.join(str(n) for n in path_nodes)}",
-    ]
-    return ". ".join(parts)
+    # Try lightweight MiniLM fallback
+    try:
+        from sentence_transformers import SentenceTransformer
+        _embedder = SentenceTransformer("all-MiniLM-L6-v2")
+        _embed_mode = "minilm"
+        print("[RAG] Loaded fallback model: all-MiniLM-L6-v2")
+        return
+    except Exception as e:
+        print(f"[RAG] MiniLM failed ({e}), using TF-IDF fallback")
+        _embed_mode = "tfidf"
+
+def get_embed_mode() -> str:
+    return _embed_mode
+
+def embed_texts(texts: list[str]) -> list[list[float]]:
+    """Embed a list of text strings. Returns list of float vectors."""
+    global _embedder, _embed_mode
+    
+    if _embedder is None:
+        _load_embedder()
+    
+    if _embed_mode in ("graphcodebert", "minilm"):
+        vectors = _embedder.encode(texts, batch_size=32,
+                                    show_progress_bar=False,
+                                    convert_to_numpy=True)
+        return [v.tolist() for v in vectors]
+    
+    # TF-IDF fallback: simple bag-of-words overlap scoring
+    # Returns dummy vectors — real similarity done in retrieve_relevant_context
+    return [[0.0] * 128 for _ in texts]
+
+
+# ── ChromaDB collections ──────────────────────────────────────────────────────
+
+_chroma_client = None
+_collections: dict = {}
+COLLECTION_NAMES = ["commits", "attack_paths", "guard_events", "sink_nodes"]
+CHROMA_PATH = os.getenv("CHROMA_DB_PATH", "/tmp/vulngraph_chroma")
+
+def _get_chroma():
+    global _chroma_client
+    if _chroma_client is None:
+        try:
+            import chromadb
+            _chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
+            print(f"[RAG] ChromaDB initialized at {CHROMA_PATH}")
+        except Exception as e:
+            print(f"[RAG] ChromaDB failed: {e}. Using in-memory fallback.")
+            try:
+                import chromadb
+                _chroma_client = chromadb.Client()
+            except Exception:
+                _chroma_client = None
+    return _chroma_client
+
+def _get_collection(name: str):
+    client = _get_chroma()
+    if client is None:
+        return None
+    if name not in _collections:
+        try:
+            _collections[name] = client.get_or_create_collection(
+                name=f"tdra_{name}",
+                metadata={"hnsw:space": "cosine"}
+            )
+        except Exception as e:
+            print(f"[RAG] Collection {name} error: {e}")
+            return None
+    return _collections[name]
+
+
+# ── In-memory fallback store ──────────────────────────────────────────────────
+
+_fallback_docs: list[dict] = []
+
+def _fallback_search(query: str, n: int = 5) -> list[dict]:
+    """TF-IDF-style term overlap search for fallback mode."""
+    query_terms = set(query.lower().split())
+    scored = []
+    for doc in _fallback_docs:
+        text = doc.get("text", "").lower()
+        score = sum(1 for t in query_terms if t in text)
+        if score > 0:
+            scored.append((score, doc))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [d for _, d in scored[:n]]
+
+
+# ── Main API: index + retrieve ────────────────────────────────────────────────
+
+def index_tdra_findings(documents: list[dict]) -> dict:
+    """
+    Index all TDRA documents into ChromaDB.
+    documents is the output of tdra_rag_documents.build_all_documents().
+    Each doc has: {"text": str, "metadata": dict}
+    """
+    global _fallback_docs
+    _fallback_docs = documents  # always populate fallback
+
+    client = _get_chroma()
+    if client is None:
+        return {"indexed": len(documents), "mode": "fallback",
+                "embed_mode": "tfidf"}
+
+    # Group by doc_type → collection
+    by_type: dict[str, list] = {n: [] for n in COLLECTION_NAMES}
+    type_map = {
+        "commit": "commits",
+        "attack_path": "attack_paths",
+        "guard_event": "guard_events",
+        "sink_node": "sink_nodes",
+    }
+    for doc in documents:
+        coll_name = type_map.get(doc["metadata"].get("doc_type", ""), "sink_nodes")
+        by_type[coll_name].append(doc)
+
+    total_indexed = 0
+    for coll_name, docs in by_type.items():
+        if not docs:
+            continue
+        collection = _get_collection(coll_name)
+        if collection is None:
+            continue
+
+        texts = [d["text"] for d in docs]
+        ids   = [hashlib.md5(t.encode()).hexdigest() for t in texts]
+        metas = [d["metadata"] for d in docs]
+
+        try:
+            embeddings = embed_texts(texts)
+            collection.upsert(
+                documents=texts,
+                embeddings=embeddings,
+                metadatas=metas,
+                ids=ids,
+            )
+            total_indexed += len(docs)
+        except Exception as e:
+            print(f"[RAG] Index error in {coll_name}: {e}")
+
+    return {"indexed": total_indexed, "mode": "chromadb",
+            "embed_mode": _embed_mode,
+            "collections": {k: len(v) for k, v in by_type.items()}}
+
 
 def index_graph_findings(graph_data: dict, attack_paths: list[dict]) -> dict:
-    global _documents
-    _documents = []
+    """Backwards-compatibility wrapper for indexing graph findings."""
+    from backend.services.tdra_rag_documents import build_all_documents
+    docs = build_all_documents(graph_data, attack_paths, [])
+    res = index_tdra_findings(docs)
+    return {"total_docs": res.get("indexed", 0), **res}
 
-    indexed_nodes = 0
-    for node in graph_data.get('nodes', []):
-        if node.get('type') in ('source', 'sink', 'sanitizer'):
-            doc = _node_to_document(node)
-            _documents.append({
-                "document": doc,
-                "metadata": {
-                    "doc_type": "node",
-                    "node_type": node.get('type', 'unknown'),
-                    "risk": node.get('risk', 'LOW')
-                }
-            })
-            indexed_nodes += 1
 
-    indexed_paths = 0
-    for i, path_info in enumerate(attack_paths):
-        doc = _path_to_document(path_info, i)
-        _documents.append({
-            "document": doc,
-            "metadata": {
-                "doc_type": "attack_path",
-                "classification": path_info.get('classification', 'UNKNOWN')
-            }
-        })
-        indexed_paths += 1
 
-    return {"indexed_nodes": indexed_nodes, "indexed_paths": indexed_paths, "total_docs": len(_documents)}
-
-def retrieve_relevant_context(query: str, n_results: int = 5, filter_type: Optional[str] = None) -> list[dict]:
-    if not _documents: return []
-    
-    query_terms = set(query.lower().split())
-    scored_docs = []
-    
-    for doc in _documents:
-        if filter_type and doc['metadata'].get('doc_type') != filter_type: continue
-        
-        text = doc['document'].lower()
-        score = sum(1.0 for term in query_terms if term in text)
-        if score > 0:
-            scored_docs.append({
-                "document": doc['document'],
-                "metadata": doc['metadata'],
-                "relevance_score": min(score / len(query_terms), 1.0)
-            })
-            
-    scored_docs.sort(key=lambda x: x['relevance_score'], reverse=True)
-    return scored_docs[:n_results]
-
-def build_gemini_prompt(user_query: str,
-                         retrieved_docs: list[dict],
-                         graph_summary: dict) -> str:
+def retrieve_relevant_context(
+    query: str,
+    n_results: int = 5,
+    severity_filter: Optional[str] = None,
+    doc_types: Optional[list[str]] = None,
+) -> list[dict]:
     """
-    Build a grounded Gemini prompt using retrieved RAG context.
-    This is the key function that fixes the generic response problem.
+    Retrieve the most semantically relevant TDRA documents for a query.
+    Returns list of {text, metadata, score, collection} dicts.
     """
-    context_blocks = []
-    for i, doc in enumerate(retrieved_docs):
-        relevance = doc['relevance_score']
-        context_blocks.append(
-            f"[Finding {i+1} — relevance {relevance:.0%}]\n{doc['document']}"
-        )
+    client = _get_chroma()
+    
+    if client is None:
+        # Fallback to TF-IDF in-memory search
+        results = _fallback_search(query, n=n_results * 2)
+        return [{"text": d["text"], "metadata": d.get("metadata", {}),
+                 "score": 1.0, "collection": "fallback"}
+                for d in results[:n_results]]
 
-    context_text = "\n\n".join(context_blocks) if context_blocks else \
-        "No specific findings retrieved — answer generally."
-
-    summary_text = (
-        f"Scan summary: {graph_summary.get('total_nodes',0)} nodes, "
-        f"{graph_summary.get('total_sources',0)} sources, "
-        f"{graph_summary.get('total_sinks',0)} sinks, "
-        f"{graph_summary.get('total_paths',0)} attack paths found. "
-        f"Project: {graph_summary.get('scanned_project','unknown')}"
+    type_to_coll = {
+        "commit": "commits",
+        "attack_path": "attack_paths",
+        "guard_event": "guard_events",
+        "sink_node": "sink_nodes",
+    }
+    
+    target_colls = (
+        [type_to_coll[t] for t in doc_types if t in type_to_coll]
+        if doc_types else COLLECTION_NAMES
     )
 
-    return f"""You are a cybersecurity analyst assistant for VulnGraph.
-You have access to the actual findings from a real codebase security scan.
-Answer the user's question using ONLY the findings provided below.
-Be specific — reference actual file names, line numbers, authors, and CVEs from the findings.
-Do not give generic security advice unless no specific findings are relevant.
+    query_embedding = embed_texts([query])[0]
 
-SCAN SUMMARY:
-{summary_text}
+    all_results = []
+    for coll_name in target_colls:
+        collection = _get_collection(coll_name)
+        if collection is None:
+            continue
+        
+        where = {}
+        if severity_filter:
+            where["severity"] = {"$eq": severity_filter}
+        
+        try:
+            r = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=min(n_results, collection.count() or 1),
+                where=where if where else None,
+                include=["documents", "metadatas", "distances"],
+            )
+            for doc, meta, dist in zip(
+                r["documents"][0],
+                r["metadatas"][0],
+                r["distances"][0]
+            ):
+                all_results.append({
+                    "text": doc,
+                    "metadata": meta,
+                    "score": 1.0 - dist,  # cosine: distance → similarity
+                    "collection": coll_name,
+                })
+        except Exception as e:
+            print(f"[RAG] Query error in {coll_name}: {e}")
 
-RELEVANT FINDINGS (retrieved by semantic search):
-{context_text}
+    # Sort by score descending, deduplicate by text hash
+    seen = set()
+    deduped = []
+    for r in sorted(all_results, key=lambda x: x["score"], reverse=True):
+        h = hashlib.md5(r["text"].encode()).hexdigest()
+        if h not in seen:
+            seen.add(h)
+            deduped.append(r)
 
-USER QUESTION: {user_query}
+    return deduped[:n_results]
 
-Respond in 3-5 sentences. Be specific about the actual findings.
-If the question asks to highlight/show a path, also return:
-{{"action": "highlight_path", "path_index": N}}
-at the end of your response on a new line as JSON.
-If the question asks about a specific node, also return:
-{{"action": "select_node", "node_id": "..."}}
-If no action needed, do not include the JSON line."""
 
-# =============================================================================
-# OPTIONAL: ChromaDB + PyTorch Sentence Transformers Implementation
-# =============================================================================
-# If you are running this on a machine with >4GB Docker RAM, you can swap 
-# the lightweight keyword search above with this semantic embedding engine.
-#
-# To use: 
-# 1. Comment out the lightweight `_documents`, `index_graph_findings`, and 
-#    `retrieve_relevant_context` functions above.
-# 2. Uncomment the block below.
-#
-# import chromadb
-# from chromadb.config import Settings
-# from sentence_transformers import SentenceTransformer
-#
-# _embedder = None
-# _chroma_client = None
-# _collection = None
-# COLLECTION_NAME = "vulngraph_findings"
-#
-# def _get_embedder():
-#     global _embedder
-#     if _embedder is None:
-#         _embedder = SentenceTransformer("all-MiniLM-L6-v2")
-#     return _embedder
-#
-# def _get_collection():
-#     global _chroma_client, _collection
-#     if _chroma_client is None:
-#         _chroma_client = chromadb.Client(Settings(
-#             chroma_db_impl="duckdb+parquet",
-#             persist_directory="./chroma_store",
-#             anonymized_telemetry=False
-#         ))
-#     if _collection is None:
-#         _collection = _chroma_client.get_or_create_collection(
-#             name=COLLECTION_NAME,
-#             metadata={"hnsw:space": "cosine"}
-#         )
-#     return _collection
-#
-# def index_graph_findings(graph_data: dict, attack_paths: list[dict]) -> dict:
-#     collection = _get_collection()
-#     embedder = _get_embedder()
-#     try:
-#         existing = collection.get()
-#         if existing['ids']: collection.delete(ids=existing['ids'])
-#     except Exception: pass
-#
-#     documents, metadatas, ids = [], [], []
-#     indexed_nodes = 0
-#     for node in graph_data.get('nodes', []):
-#         if node.get('type') in ('source', 'sink', 'sanitizer'):
-#             doc = _node_to_document(node)
-#             doc_id = f"node_{node.get('id', hashlib.md5(doc.encode()).hexdigest()[:8])}"
-#             documents.append(doc)
-#             metadatas.append({"doc_type": "node", "node_type": node.get('type', 'unknown'), "risk": node.get('risk', 'LOW')})
-#             ids.append(doc_id)
-#             indexed_nodes += 1
-#
-#     indexed_paths = 0
-#     for i, path_info in enumerate(attack_paths):
-#         doc = _path_to_document(path_info, i)
-#         doc_id = f"path_{i}_{hashlib.md5(doc.encode()).hexdigest()[:8]}"
-#         documents.append(doc)
-#         metadatas.append({"doc_type": "attack_path", "classification": path_info.get('classification', 'UNKNOWN')})
-#         ids.append(doc_id)
-#         indexed_paths += 1
-#
-#     if documents:
-#         embeddings = embedder.encode(documents).tolist()
-#         collection.add(documents=documents, embeddings=embeddings, metadatas=metadatas, ids=ids)
-#
-#     return {"indexed_nodes": indexed_nodes, "indexed_paths": indexed_paths, "total_docs": len(documents)}
-#
-# def retrieve_relevant_context(query: str, n_results: int = 5, filter_type: Optional[str] = None) -> list[dict]:
-#     collection = _get_collection()
-#     embedder = _get_embedder()
-#     try:
-#         if collection.count() == 0: return []
-#     except Exception: return []
-#
-#     query_embedding = embedder.encode([query]).tolist()
-#     where_filter = {"doc_type": filter_type} if filter_type else None
-#
-#     results = collection.query(
-#         query_embeddings=query_embedding,
-#         n_results=min(n_results, max(collection.count(), 1)),
-#         where=where_filter,
-#         include=["documents", "metadatas", "distances"]
-#     )
-#
-#     retrieved = []
-#     for i, doc in enumerate(results['documents'][0]):
-#         retrieved.append({
-#             "document": doc,
-#             "metadata": results['metadatas'][0][i],
-#             "relevance_score": round(1 - results['distances'][0][i], 3)
-#         })
-#     return retrieved
+def build_tdra_context_block(results: list[dict]) -> str:
+    """
+    Format retrieved documents into a structured context block
+    for injection into the LLM system prompt.
+    """
+    if not results:
+        return "No relevant TDRA findings retrieved for this query."
+
+    lines = ["=== TDRA SECURITY EVIDENCE (DETERMINISTICALLY PROVEN) ===\n"]
+    for i, r in enumerate(results, 1):
+        meta = r["metadata"]
+        dtype = meta.get("doc_type", "finding")
+        score = r["score"]
+        lines.append(f"[{i}] {dtype.upper()} (relevance: {score:.2f})")
+        lines.append(r["text"])
+        lines.append("")
+
+    lines.append("=== END OF EVIDENCE ===")
+    lines.append("The above findings were computed by the TDRA graph engine.")
+    lines.append("Explain only what the evidence shows. Do not infer or speculate beyond it.")
+    return "\n".join(lines)

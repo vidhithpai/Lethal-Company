@@ -5,6 +5,14 @@ import { API_BASE } from "../../services/api";
 const MetricsBar = ({ onScan }) => {
   const graph = useStore((state) => state.graph);
   const loading = useStore((state) => state.loading);
+  const [ragStatus, setRagStatus] = useState("tfidf");
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/query/rag-status`)
+      .then(r => r.json())
+      .then(d => setRagStatus(d.embed_mode))
+      .catch(() => setRagStatus("tfidf"));
+  }, []);
 
   const downloadReport = (format) => {
     const url = `${API_BASE}/api/report/${format}`;
@@ -99,6 +107,11 @@ const MetricsBar = ({ onScan }) => {
             <span className="pulse-dot-green" /> LIVE GRAPH
           </span>
         )}
+        <span style={{ fontSize:9, color:'#3FB950' }}>
+          {ragStatus === 'graphcodebert' ? '🔬 GraphCodeBERT'
+           : ragStatus === 'minilm' ? '📋 MiniLM'
+           : '📄 Rule-based'} RAG
+        </span>
         <span className="cmd-time-stamp">Last update: {metrics.time || "10:01:56 PM"}</span>
       </div>
 

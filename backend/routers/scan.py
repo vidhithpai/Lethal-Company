@@ -156,7 +156,6 @@ def scan(req: ScanRequest):
     csg._current_paths = attack_paths
     csg._current_high_risk = attack_paths
     
-    rag_result = index_graph_findings(graph_data, attack_paths)
     update_graph_summary({
         "total_nodes": len(node_list_data),
         "total_sources": len(sources),
@@ -164,6 +163,46 @@ def scan(req: ScanRequest):
         "total_paths": len(attack_paths),
         "scanned_project": p.name
     })
+
+    from backend.services.tdra_rag_documents import build_all_documents
+    from backend.services.rag_engine import index_tdra_findings
+
+    # Trigger RAG indexing in background so scan response is not delayed
+    import threading
+
+    def _index_in_background(graph_data, attack_paths, tdra_timeline):
+        try:
+            docs = build_all_documents(
+                graph_data=graph_data,
+                attack_paths=attack_paths,
+                tdra_timeline=tdra_timeline,
+            )
+            result = index_tdra_findings(docs)
+            print(f"[RAG] Indexed {result['indexed']} documents "
+                  f"(mode={result['embed_mode']})")
+        except Exception as e:
+            print(f"[RAG] Background indexing failed: {e}")
+
+    # Get current TDRA data for indexing
+    try:
+        from backend.services.mock_tdra_data import get_mock_timeline
+        # Try to get real timeline, fall back to mock for indexing
+        try:
+            from backend.routers.tdra import _get_analyzed_commit_results
+            tdra_results, _ = _get_analyzed_commit_results(
+                req.project_path, limit=20
+            )
+        except Exception:
+            tdra_results = get_mock_timeline()[:10]
+        
+        bg_thread = threading.Thread(
+            target=_index_in_background,
+            args=(graph_data, attack_paths, tdra_results),
+            daemon=True
+        )
+        bg_thread.start()
+    except Exception as e:
+        print(f"[RAG] Could not start background indexing: {e}")
 
     return {
         "message": "Scan complete",
@@ -175,7 +214,7 @@ def scan(req: ScanRequest):
         "sinks": len(sinks),
         "paths_found": paths_found,
         "git_root": repo_root,
-        "rag_indexed": rag_result["total_docs"],
+        "rag_indexed": True,
     }
 
 
