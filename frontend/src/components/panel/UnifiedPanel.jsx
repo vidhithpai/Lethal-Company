@@ -2,6 +2,35 @@ import { useState, useRef, useEffect } from "react";
 import useStore from "../../store/useStore";
 import { API_BASE } from "../../services/api";
 
+function EvidenceCard({ source, index }) {
+  const typeColors = {
+    commit:      '#58A6FF',
+    attack_path: '#F85149',
+    guard_event: '#F0883E',
+    sink_node:   '#A371F7',
+  };
+  const color = typeColors[source.type] || '#8B949E';
+  return (
+    <div style={{
+      background: '#161B22', border: `1px solid ${color}33`,
+      borderLeft: `3px solid ${color}`, borderRadius: 6,
+      padding: '8px 10px', marginBottom: 6, fontSize: 11,
+    }}>
+      <div style={{ display:'flex', justifyContent:'space-between',
+                    marginBottom: 4 }}>
+        <span style={{ color, fontWeight: 600, textTransform: 'uppercase',
+                       fontSize: 9 }}>{source.type?.replace('_',' ')}</span>
+        <span style={{ color:'#4B5563', fontSize: 9 }}>
+          relevance {(source.score * 100).toFixed(0)}%
+        </span>
+      </div>
+      <div style={{ color: '#8B949E', lineHeight: 1.5 }}>
+        {source.text}
+      </div>
+    </div>
+  );
+}
+
 export default function UnifiedPanel({
   selectedNode, attackPath, attackPaths, onPatch, onHighlightPath, onSelectNode
 }) {
@@ -14,6 +43,7 @@ export default function UnifiedPanel({
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [aiResponse, setAiResponse] = useState(null);
   const [nodeContext, setNodeContext] = useState(null);
   const [nodeAnalysis, setNodeAnalysis] = useState(null);
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
@@ -80,6 +110,9 @@ export default function UnifiedPanel({
         body: JSON.stringify({ query: userMsg })
       });
       const data = await res.json();
+      
+      // Store the full structured response, not just explanation text
+      setAiResponse(data);
 
       if (data.action) {
         if (data.action.action === "highlight_path" && data.action.path_index !== undefined) {
@@ -90,14 +123,10 @@ export default function UnifiedPanel({
         }
       }
 
-      const sources = data.retrieved_docs?.slice(0, 2).map(d =>
-        d.document.substring(0, 80) + "..."
-      ) || [];
-
       setMessages(prev => [...prev, {
         role: "assistant",
         text: data.explanation || "No response.",
-        sources,
+        data: data,
         action: data.action
       }]);
     } catch {
@@ -339,9 +368,81 @@ export default function UnifiedPanel({
                   <div style={{ fontSize: 9.5, fontWeight: 800, color: msg.role === 'user' ? 'var(--accent-blue)' : 'var(--accent-cyan)', marginBottom: 4 }}>
                     {msg.role === 'user' ? 'INVESTIGATOR' : 'FORENSIC AI'}
                   </div>
-                  <div style={{ fontSize: 12, color: 'var(--text-primary)', lineHeight: 1.5 }}>
-                    {msg.text}
-                  </div>
+                  {msg.data ? (
+                    <div style={{ padding: '4px 0 6px' }}>
+                      {/* RAG mode indicator */}
+                      <div style={{ display:'flex', gap:6, marginBottom:8, flexWrap:'wrap' }}>
+                        <span style={{ fontSize:9, padding:'2px 6px', borderRadius:3,
+                                       background: msg.data.source==='tdra_rag'
+                                         ? '#0D2B1A' : '#21262D',
+                                       color: msg.data.source==='tdra_rag'
+                                         ? '#3FB950' : '#6E7681',
+                                       border: `1px solid ${msg.data.source==='tdra_rag'
+                                         ? '#3FB950' : '#30363D'}` }}>
+                          {msg.data.source === 'tdra_rag' ? '🔬 Evidence-grounded' : '📋 Rule-based'}
+                        </span>
+                        {msg.data.confidence > 0 && (
+                          <span style={{ fontSize:9, padding:'2px 6px', borderRadius:3,
+                                         background:'#21262D', color:'#8B949E',
+                                         border:'1px solid #30363D' }}>
+                            {msg.data.evidence_count} evidence docs · 
+                            {(msg.data.confidence*100).toFixed(0)}% avg relevance
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Main explanation */}
+                      <div style={{ color:'#E6EDF3', fontSize:12, lineHeight:1.65,
+                                    marginBottom:12, whiteSpace:'pre-wrap' }}>
+                        {msg.data.explanation}
+                      </div>
+
+                      {/* Metadata pills */}
+                      {(msg.data.cwes?.length > 0 || msg.data.affected_commits?.length > 0) && (
+                        <div style={{ display:'flex', gap:4, flexWrap:'wrap', marginBottom:10 }}>
+                          {msg.data.cwes?.map(cwe => (
+                            <span key={cwe} style={{ fontSize:9, padding:'2px 7px',
+                                                      borderRadius:3, background:'#2D1010',
+                                                      color:'#F85149', border:'1px solid #F8514933' }}>
+                              {cwe}
+                            </span>
+                          ))}
+                          {msg.data.affected_commits?.slice(0,3).map(h => (
+                            <span key={h} style={{ fontSize:9, padding:'2px 7px',
+                                                    borderRadius:3, background:'#0D1F35',
+                                                    color:'#58A6FF', border:'1px solid #58A6FF33',
+                                                    fontFamily:'monospace' }}>
+                              {h.slice(0,8)}
+                            </span>
+                          ))}
+                          {msg.data.affected_files?.slice(0,2).map(f => (
+                            <span key={f} style={{ fontSize:9, padding:'2px 7px',
+                                                    borderRadius:3, background:'#21262D',
+                                                    color:'#8B949E', border:'1px solid #30363D' }}>
+                              {f}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Evidence sources */}
+                      {msg.data.evidence_sources?.length > 0 && (
+                        <div>
+                          <div style={{ fontSize:9, color:'#4B5563', textTransform:'uppercase',
+                                        letterSpacing:'0.07em', marginBottom:6 }}>
+                            Evidence from TDRA engine
+                          </div>
+                          {msg.data.evidence_sources.map((src, idx) => (
+                            <EvidenceCard key={idx} source={src} index={idx} />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, color: 'var(--text-primary)', lineHeight: 1.5 }}>
+                      {msg.text}
+                    </div>
+                  )}
                 </div>
               ))}
               <div ref={chatEndRef} />

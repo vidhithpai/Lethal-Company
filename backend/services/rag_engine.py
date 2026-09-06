@@ -184,6 +184,15 @@ def index_tdra_findings(documents: list[dict]) -> dict:
             "collections": {k: len(v) for k, v in by_type.items()}}
 
 
+def index_graph_findings(graph_data: dict, attack_paths: list[dict]) -> dict:
+    """Backwards-compatibility wrapper for indexing graph findings."""
+    from backend.services.tdra_rag_documents import build_all_documents
+    docs = build_all_documents(graph_data, attack_paths, [])
+    res = index_tdra_findings(docs)
+    return {"total_docs": res.get("indexed", 0), **res}
+
+
+
 def retrieve_relevant_context(
     query: str,
     n_results: int = 5,
