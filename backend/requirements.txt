@@ -10,3 +10,7 @@ numpy
 scipy
 javalang>=0.13.0
 pandas
+chromadb>=0.4.0
+sentence-transformers>=2.2.0
+transformers>=4.35.0
+torch>=2.0.0  ; extra == "rag"
