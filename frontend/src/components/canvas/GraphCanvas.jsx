@@ -13,7 +13,7 @@ const getNodeColor = (node) => {
     source: '#10B981',
     sink: '#EF4444',
     intermediate: '#F59E0B',
-    sanitizer: '#8B5CF6',
+    sanitizer: '#0EA5E9',
     function: '#3B82F6',
     normal: '#3B82F6',
   };
@@ -44,7 +44,7 @@ function getEdgeStyle(link) {
     return { color: '#3B82F6', width: 1.5, opacity: 0.65, label: 'Calls' };
   }
   if (raw.includes('reaching_def') || raw.includes('taint')) {
-    return { color: '#8B5CF6', width: 2.0, opacity: 0.85, label: 'Taint' };
+    return { color: '#0EA5E9', width: 2.0, opacity: 0.85, label: 'Taint' };
   }
   if (raw === 'dataflow' || raw === 'data_flow') {
     return { color: '#06B6D4', width: 1.4, opacity: 0.55, label: 'DataFlow' };
@@ -130,7 +130,7 @@ const LegendHUD = () => (
       {[
         { color:'#3B82F6',  label:'Calls' },
         { color:'#06B6D4',  label:'Cross-file / Data flow' },
-        { color:'#8B5CF6',  label:'Taint flow' },
+        { color:'#0EA5E9',  label:'Taint flow' },
         { color:'#F59E0B',  label:'Extends' },
         { color:'#EC4899',  label:'Implements' },
         { color:'rgba(239,68,68,0.95)', label:'Attack path' },
@@ -160,7 +160,13 @@ const ControlsHintHUD = () => (
 );
 
 // ─── Animated 3D Node Object Builder ──────────────────────────────────────────
+let _nodeThreeObjectCalls = 0;
+
 function buildNodeObject(node, isOnPath, animatedObjectsRef, diffMode, isDiffNode) {
+  _nodeThreeObjectCalls++;
+  if (_nodeThreeObjectCalls === 1 || _nodeThreeObjectCalls % 50 === 0) {
+    console.log(`[GraphCanvas] nodeThreeObject invocation #${_nodeThreeObjectCalls}: Creating new THREE.Group, Geometries (Icosahedron/Dodecahedron/Sphere), Materials, and SpriteText with NO caching/pooling.`);
+  }
   const group = new THREE.Group();
   const nodeType = String(node.type || '').toLowerCase();
   const radius = getNodeSize(node) / 2;
@@ -346,6 +352,19 @@ const GraphCanvas = ({ onNodeClick }) => {
   const [viewMode, setViewMode] = useState('3d');
   const animatedObjectsRef = useRef([]);
 
+  // STEP 2 Instrumentation: Component render counting and trigger detection
+  const renderCountRef = useRef(0);
+  const lastGraphRef = useRef(null);
+  const frameCountRef = useRef(0);
+  const lastFpsTimeRef = useRef(performance.now());
+  renderCountRef.current++;
+  console.count('[GraphCanvas] Component Render');
+  const isGraphDataNew = lastGraphRef.current !== graph;
+  console.log(
+    `[GraphCanvas] Render #${renderCountRef.current} | Graph data reference changed: ${isGraphDataNew} | Store state: { nodeCount: ${graph?.nodes?.length || 0}, edgeCount: ${graph?.links?.length || 0}, pathLength: ${path?.length || 0}, diffMode: ${diffMode}, selectedNode: ${selectedNode?.id || 'none'}, focusDepth: ${focusDepth} }`
+  );
+  lastGraphRef.current = graph;
+
   const filteredGraph = useMemo(() => {
     const nodes = graph?.nodes || [];
     const links = graph?.links || [];
@@ -434,6 +453,10 @@ const GraphCanvas = ({ onNodeClick }) => {
     let animId;
     let clock = 0;
 
+    console.log(`[GraphCanvas] 3D Animation loop initialized:
+- Node decoration animations (rotations, pulse scaling) run per-frame in requestAnimationFrame across ${animatedObjectsRef.current.length} objects.
+- Tooltip/Raycasting: nodeLabel is invoked by ForceGraph3D only on hover/raycast collision, NOT per animation frame.`);
+
     const animate = () => {
       clock += 0.02;
       const objs = animatedObjectsRef.current;
@@ -463,6 +486,16 @@ const GraphCanvas = ({ onNodeClick }) => {
           grp.userData.redGlow.scale.set(glowPulse, glowPulse, glowPulse);
         }
       }
+
+      frameCountRef.current++;
+      if (frameCountRef.current % 120 === 0) {
+        const now = performance.now();
+        const elapsed = now - lastFpsTimeRef.current;
+        const fps = Math.round((120 / elapsed) * 1000);
+        console.log(`[GraphCanvas] [PERF] Animation pulse loop: ~${fps} FPS | ${objs.length} node meshes being transformed per frame.`);
+        lastFpsTimeRef.current = now;
+      }
+
       animId = requestAnimationFrame(animate);
     };
 
@@ -534,6 +567,13 @@ const GraphCanvas = ({ onNodeClick }) => {
       700
     );
   }, [zoomTrigger, path]);
+
+  console.log(`[GraphCanvas] Passing to react-force-graph-3d:
+- Total Nodes: ${filteredGraph?.nodes?.length || 0}
+- Total Edges: ${filteredGraph?.links?.length || 0}
+- ForceGraph3D props: cooldownTicks=120, warmupTicks=0 (undefined / unconfigured)
+- linkThreeObject: undefined (standard Three.js line)
+- nodeThreeObject: custom buildNodeObject (allocates THREE.Group, Geometries, Materials, and SpriteText on every call without caching)`);
 
   animatedObjectsRef.current = [];
 

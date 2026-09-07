@@ -10,7 +10,7 @@ from backend.services.code_security_graph import (
     get_current_graph, get_current_attack_paths,
     get_current_high_risk_paths
 )
-from backend.routers.query import _groq_client, AI_AVAILABLE, _cache as ai_query_cache
+from backend.routers.query import _groq_client, AI_AVAILABLE
 
 def _generate_ai_summary(project, sinks_len, high_len, sources_len, files_len):
     if not AI_AVAILABLE or not _groq_client:

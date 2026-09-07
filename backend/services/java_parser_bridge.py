@@ -14,6 +14,22 @@ JAVAPARSER_JAR = _REPO_ROOT / "tools" / "javaparser-cli.jar"
 
 logger = logging.getLogger(__name__)
 
+# Instrumentation counters
+_javalang_call_count = 0
+_subprocess_call_count = 0
+
+def get_parser_stats() -> dict[str, int]:
+    return {
+        "javalang_calls": _javalang_call_count,
+        "subprocess_calls": _subprocess_call_count,
+    }
+
+def reset_parser_stats():
+    global _javalang_call_count, _subprocess_call_count
+    _javalang_call_count = 0
+    _subprocess_call_count = 0
+
+
 ENTRY_ANNOTATIONS = {
     "RequestMapping", "GetMapping", "PostMapping", "PutMapping", "DeleteMapping",
     "Action", "Controller",
@@ -241,6 +257,8 @@ def _run_javaparser_cli(filepath: str) -> dict[str, list[dict[str, Any]]] | None
     if shutil.which("java") is None:
         return None
 
+    global _subprocess_call_count
+    _subprocess_call_count += 1
     try:
         proc = subprocess.run(
             ["java", "-jar", str(JAVAPARSER_JAR), filepath],
@@ -461,6 +479,8 @@ def _match_ast_sink(inv: Any) -> dict[str, Any] | None:
 
 
 def _parse_javalang_ast(filepath: str, content: str) -> dict[str, list[dict[str, Any]]] | None:
+    global _javalang_call_count
+    _javalang_call_count += 1
     try:
         import javalang
         tree = javalang.parse.parse(content)

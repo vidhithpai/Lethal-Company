@@ -14,7 +14,7 @@ const T = {
   source:     "#10B981",
   sink:       "#EF4444",
   intermediate:"#F59E0B",
-  sanitizer:  "#8B5CF6",
+  sanitizer:  "#0EA5E9",
   normal:     "#3B82F6",
   patched:    "#64748B",
 };

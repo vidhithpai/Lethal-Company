@@ -24,10 +24,12 @@ except Exception:
     AI_AVAILABLE = False
 
 _graph_summary: dict = {}
+_cache: dict = {}
 
 def update_graph_summary(summary: dict):
     global _graph_summary
     _graph_summary = summary
+
 
 
 class QueryRequest(BaseModel):

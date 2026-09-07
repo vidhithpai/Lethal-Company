@@ -32,9 +32,16 @@ function EvidenceCard({ source, index }) {
 }
 
 export default function UnifiedPanel({
-  selectedNode, attackPath, attackPaths, onPatch, onHighlightPath, onSelectNode
+  selectedNode, attackPath, attackPaths, onPatch, onHighlightPath, onSelectNode, externalTab
 }) {
   const [activeTab, setActiveTab] = useState("node");
+
+  useEffect(() => {
+    if (externalTab) {
+      setActiveTab(externalTab);
+    }
+  }, [externalTab]);
+
   const [messages, setMessages] = useState([
     {
       role: "assistant",

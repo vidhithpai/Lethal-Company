@@ -1,0 +1,21 @@
+{
+  "version": "1.0",
+  "project_path": "C:\\Users\\KRYPTON\\Documents\\Projects\\MajorProject\\Final\\Lethal-Company\\sample_project\\src",
+  "last_full_scan": "2026-09-07T17:41:56.986203",
+  "files": {
+    "C:\\Users\\KRYPTON\\Documents\\Projects\\MajorProject\\Final\\Lethal-Company\\sample_project\\src\\VulnerableController.java": {
+      "hash": "de3897ff481f1208",
+      "analyzed_at": "2026-09-07T17:41:56.986203"
+    },
+    "C:\\Users\\KRYPTON\\Documents\\Projects\\MajorProject\\Final\\Lethal-Company\\sample_project\\src\\app.py": {
+      "hash": "ee031a262ca60acc",
+      "analyzed_at": "2026-09-07T17:41:56.986203"
+    },
+    "C:\\Users\\KRYPTON\\Documents\\Projects\\MajorProject\\Final\\Lethal-Company\\sample_project\\src\\vulnerable_app.py": {
+      "hash": "2682134c355d392a",
+      "analyzed_at": "2026-09-07T17:41:56.986203"
+    }
+  },
+  "graph_nodes": 3,
+  "graph_edges": 2
+}

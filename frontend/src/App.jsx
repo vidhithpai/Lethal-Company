@@ -4,6 +4,7 @@ import MetricsBar from "./components/metrics/MetricsBar";
 import UnifiedPanel from "./components/panel/UnifiedPanel";
 import CommitTimeline from "./components/panel/CommitTimeline";
 import ExplorerPanel from "./components/panel/ExplorerPanel";
+import RepoAnalyzer from "./components/landing/RepoAnalyzer";
 import { endpoints, normalizeGraph } from "./services/api";
 import useStore from "./store/useStore";
 
@@ -23,7 +24,8 @@ const App = () => {
   const [repoPath, setRepoPath] = useState("./demo_project");
   const [highlightedPathIndex, setHighlightedPathIndex] = useState(null);
   const [attackPaths, setAttackPaths] = useState([]);
-  const fileInputRef = useRef(null);
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [panelTab, setPanelTab] = useState("node");
 
   useEffect(() => {
     fetch(endpoints.attackPaths)
@@ -72,30 +74,26 @@ const App = () => {
     loadGraph();
   }, [setGraph, setExplanation, setLoading]);
 
-  const handleScanNewProject = () => {
-    if (fileInputRef.current) {
-      fileInputRef.current.click();
-    }
-  };
-
-  const handleFileUpload = async (e) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+  const handleAnalyzeFiles = async (files) => {
+    if (!files || files.length === 0) return false;
 
     setLoading(true);
-    setExplanation(`Uploading ${files.length} files...`);
+    setExplanation(`Uploading and analyzing ${files.length} files...`);
     
     const formData = new FormData();
-    const folderName = files[0].webkitRelativePath ? files[0].webkitRelativePath.split('/')[0] : "uploaded_project";
+    const folderName = files[0].webkitRelativePath 
+      ? files[0].webkitRelativePath.split('/')[0] 
+      : (files[0].name.replace(/\.[^/.]+$/, "") || "uploaded_project");
     formData.append("folder_name", folderName);
     setRepoPath(folderName);
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       // Skip heavy dependency folders, but keep .git for blame attribution
-      if (file.webkitRelativePath.includes('node_modules/') || 
+      if (file.webkitRelativePath && (
+          file.webkitRelativePath.includes('node_modules/') || 
           file.webkitRelativePath.includes('.venv/') ||
-          file.webkitRelativePath.includes('__pycache__/')) {
+          file.webkitRelativePath.includes('__pycache__/'))) {
         continue;
       }
       formData.append("files", file, file.webkitRelativePath || file.name);
@@ -122,43 +120,74 @@ const App = () => {
           .then(r => r.json())
           .then(data => setAttackPaths(data.paths || data))
           .catch(console.error);
+
+        setShowUploadModal(false);
+        return true;
       } else {
         const err = await res.json();
         alert("Upload failed: " + (err.detail || err.error || "Unknown error"));
         setExplanation("Scan failed.");
+        return false;
       }
     } catch (err) {
       alert("Error contacting backend: " + err.message);
       setExplanation("Scan failed.");
+      return false;
     } finally {
       setLoading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
+  const hasActiveGraph = Boolean(graph?.nodes && graph.nodes.length > 0);
+
+  // If no repository has been loaded yet, show the centered RepoAnalyzer screen
+  if (!hasActiveGraph && !loading) {
+    return (
+      <RepoAnalyzer
+        onAnalyze={handleAnalyzeFiles}
+        isLoading={loading}
+        loadingMessage="Uploading & Analyzing Repository..."
+        hasActiveGraph={false}
+      />
+    );
+  }
+
   return (
-    <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
+    <div style={{ display: "flex", height: "100vh", overflow: "hidden", position: "relative" }}>
+      {/* Modal overlay when user clicks 'Scan New Project' */}
+      {showUploadModal && (
+        <RepoAnalyzer
+          onAnalyze={handleAnalyzeFiles}
+          isLoading={loading}
+          loadingMessage="Uploading & Analyzing Repository..."
+          hasActiveGraph={true}
+          onClose={() => setShowUploadModal(false)}
+        />
+      )}
+
       {/* LEFT: Explorer panel */}
       <ExplorerPanel
         collapsed={explorerCollapsed}
         onToggle={() => setExplorerCollapsed(c => !c)}
       />
 
-      {/* CENTER + RIGHT: existing layout unchanged */}
+      {/* CENTER + RIGHT: Main Security Analysis Layout */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-        <input 
-          type="file" 
-          webkitdirectory="true" 
-          directory="true" 
-          multiple 
-          ref={fileInputRef} 
-          style={{ display: "none" }} 
-          onChange={handleFileUpload} 
-        />
-        <MetricsBar onScan={handleScanNewProject} />
+        <MetricsBar onScan={() => setShowUploadModal(true)} />
         <div className="main-layout" style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-          <div className="graph-wrap" style={{ flex: 1 }}>
+          <div className="graph-wrap" style={{ flex: 1, position: "relative" }}>
             <GraphCanvas onNodeClick={setSelectedNode} />
+
+            {/* Floating Query Button (Matches Reference Screenshots) */}
+            <button
+              type="button"
+              className="floating-query-btn"
+              onClick={() => setPanelTab(prev => prev === "ai" ? "node" : "ai")}
+              title="Open AI Security Intelligence Query"
+            >
+              <span className="query-btn-icon">&gt;_</span>
+              <span className="query-btn-text">Query</span>
+            </button>
           </div>
           <div style={{ width: "30%", minWidth: "300px", height: "100%" }}>
             <UnifiedPanel
@@ -173,6 +202,7 @@ const App = () => {
                 const node = graph?.nodes?.find(n => n.id === nodeId);
                 if (node) setSelectedNode(node);
               }}
+              externalTab={panelTab}
             />
           </div>
         </div>
@@ -183,3 +213,4 @@ const App = () => {
 };
 
 export default App;
+

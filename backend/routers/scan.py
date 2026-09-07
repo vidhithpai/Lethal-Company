@@ -119,6 +119,9 @@ def scan(req: ScanRequest):
         "current_file": None,
     })
 
+    from backend.services.java_parser_bridge import reset_parser_stats
+    reset_parser_stats()
+
     # Trigger a scan (Java or Python pipeline)
     language = detect_project_language(str(p))
     java_files_exist = any(Path(p).rglob("*.java"))
@@ -228,6 +231,59 @@ def scan(req: ScanRequest):
     except Exception as e:
         print(f"[RAG] Could not start background indexing: {e}")
 
+    # Collect perf diagnostics
+    if java_files_exist:
+        from backend.services.java_graph_builder import get_last_java_timings
+        builder_timings = get_last_java_timings()
+    else:
+        from backend.services.code_security_graph import get_last_python_timings
+        builder_timings = get_last_python_timings()
+
+    from backend.services.java_parser_bridge import get_parser_stats
+    from backend.services.code_security_graph import get_last_path_stats
+
+    parser_stats = get_parser_stats()
+    path_stats = get_last_path_stats()
+
+    timings = {
+        "file_discovery": round(builder_timings.get("file_discovery", 0.0), 4),
+        "symbol_table": round(builder_timings.get("symbol_table", 0.0), 4),
+        "file_parsing": round(builder_timings.get("file_parsing", 0.0), 4),
+        "edge_resolution": round(builder_timings.get("edge_resolution", 0.0), 4),
+        "path_enumeration": round(path_stats.get("path_enumeration_time", 0.0), 4),
+        "attenuation": round(path_stats.get("attenuation_time", 0.0), 4),
+    }
+
+    total_files_discovered = builder_timings.get("discovered_files_count", total_files_scanned)
+    javalang_invocations = parser_stats.get("javalang_calls", 0)
+    subprocess_calls = parser_stats.get("subprocess_calls", 0)
+
+    diagnostics = {
+        "timings": timings,
+        "total_files_discovered": total_files_discovered,
+        "total_nodes": len(nodes),
+        "total_edges": len(edges),
+        "source_sink_pairs_checked": path_stats.get("pairs_checked", 0),
+        "total_paths_found": path_stats.get("total_paths_found", 0),
+        "javalang_invocations": javalang_invocations,
+        "subprocess_calls_total": subprocess_calls,
+        "parser_mode": (
+            f"javalang (invoked {javalang_invocations} times)"
+            if javalang_invocations > 0
+            else (
+                f"subprocess ({subprocess_calls} calls)"
+                if subprocess_calls > 0
+                else "python ast"
+            )
+        ),
+    }
+
+    import json
+    print("\n" + "=" * 60)
+    print("[PERF DIAGNOSTICS] Scan Pipeline Timings & Stats:")
+    print(json.dumps(diagnostics, indent=2))
+    print("=" * 60 + "\n")
+
     return {
         "message": "Scan complete",
         "project_path": str(p),
@@ -241,6 +297,7 @@ def scan(req: ScanRequest):
         "paths_found": paths_found,
         "git_root": repo_root,
         "rag_indexed": True,
+        "diagnostics": diagnostics,
     }
 
 

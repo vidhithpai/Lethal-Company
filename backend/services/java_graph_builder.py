@@ -210,16 +210,34 @@ def build_java_graph(project_path: str,
     return G
 
 
+import time
+
+_last_java_builder_timings = {
+    "file_discovery": 0.0,
+    "symbol_table": 0.0,
+    "file_parsing": 0.0,
+    "edge_resolution": 0.0,
+    "discovered_files_count": 0,
+}
+
+def get_last_java_timings() -> dict:
+    return dict(_last_java_builder_timings)
+
+
 def _build_java_graph_full(project_path: str, progress_callback=None) -> nx.DiGraph:
+    global _last_java_builder_timings
     g = nx.DiGraph()
     root = Path(project_path).resolve()
     
+    t0 = time.perf_counter()
     java_files = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for filename in filenames:
             if filename.endswith(".java"):
                 java_files.append(str((Path(dirpath) / filename).resolve()))
+    _last_java_builder_timings["file_discovery"] = time.perf_counter() - t0
+    _last_java_builder_timings["discovered_files_count"] = len(java_files)
 
     if not java_files:
         return g
@@ -229,7 +247,9 @@ def _build_java_graph_full(project_path: str, progress_callback=None) -> nx.DiGr
         progress_callback(0, total_files, "")
     
     # === PHASE 1: Build global symbol table ===
+    t0 = time.perf_counter()
     sym = build_symbol_table(project_path)
+    _last_java_builder_timings["symbol_table"] = time.perf_counter() - t0
     by_class   = sym["by_class"]
     by_name    = sym["by_name"]
     class_files = sym["class_files"]
@@ -237,6 +257,7 @@ def _build_java_graph_full(project_path: str, progress_callback=None) -> nx.DiGr
     file_methods: dict[str, dict[str, str]] = {}
     parsed_by_file: dict[str, dict[str, list[dict[str, Any]]]] = {}
 
+    t0 = time.perf_counter()
     for idx, filepath in enumerate(java_files):
         try:
             source_text = Path(filepath).read_text(encoding="utf-8", errors="replace")
@@ -290,6 +311,9 @@ def _build_java_graph_full(project_path: str, progress_callback=None) -> nx.DiGr
         if progress_callback:
             progress_callback(idx + 1, total_files, Path(filepath).name)
 
+    _last_java_builder_timings["file_parsing"] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
     for filepath, methods in file_methods.items():
         method_names = list(methods.keys())
         for caller, body in methods.items():
@@ -391,6 +415,7 @@ def _build_java_graph_full(project_path: str, progress_callback=None) -> nx.DiGr
                                confidence=confidence,
                                call_line=call_line)
 
+    _last_java_builder_timings["edge_resolution"] = time.perf_counter() - t0
     return g
 
 
