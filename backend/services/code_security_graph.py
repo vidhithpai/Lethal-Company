@@ -649,20 +649,27 @@ class _TaintVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def build_security_graph(config: SecurityGraphConfig) -> dict[str, Any]:
+def build_security_graph(config: SecurityGraphConfig, progress_callback=None) -> dict[str, Any]:
     g = nx.DiGraph()
     sources: list[str] = []
     sinks: list[str] = []
     sanitizers: list[str] = []
 
+    all_py_files = list(_iter_python_files(config.root_dir, max_files=config.max_files))
+    total_files = len(all_py_files)
     scanned_files: list[Path] = []
 
-    for py_file in _iter_python_files(config.root_dir, max_files=config.max_files):
+    if progress_callback:
+        progress_callback(0, total_files, "")
+
+    for idx, py_file in enumerate(all_py_files):
         scanned_files.append(py_file)
         try:
             text = py_file.read_text(encoding="utf-8")
             tree = ast.parse(text, filename=str(py_file))
         except Exception:
+            if progress_callback:
+                progress_callback(idx + 1, total_files, py_file.name)
             continue
 
         vis = _TaintVisitor(py_file, g, root_dir=config.root_dir)
@@ -670,6 +677,9 @@ def build_security_graph(config: SecurityGraphConfig) -> dict[str, Any]:
         sources.extend(list(vis.sources))
         sinks.extend(list(vis.sinks))
         sanitizers.extend(list(vis.sanitizers))
+
+        if progress_callback:
+            progress_callback(idx + 1, total_files, py_file.name)
 
     # For each scanned Python file, run REACHING_DEF to find missed flows
     for filepath in scanned_files:
@@ -745,14 +755,14 @@ def build_security_graph(config: SecurityGraphConfig) -> dict[str, Any]:
     return {"graph": g, "nodes": nodes, "edges": edges, "sources": sources, "sinks": sinks, "sanitizers": sanitizers}
 
 
-def build_graph_for_path(project_path: str | Path) -> nx.DiGraph:
+def build_graph_for_path(project_path: str | Path, progress_callback=None) -> nx.DiGraph:
     p = Path(project_path).resolve()
     cfg = SecurityGraphConfig(root_dir=p)
-    res = build_security_graph(cfg)
+    res = build_security_graph(cfg, progress_callback=progress_callback)
     return res["graph"]
 
 
-def get_security_graph(root: Path | None = None) -> dict[str, Any]:
+def get_security_graph(root: Path | None = None, progress_callback=None) -> dict[str, Any]:
     global _security_graph
     target_root = root or _ROOT_OVERRIDE
     if not target_root:
@@ -791,21 +801,21 @@ def get_security_graph(root: Path | None = None) -> dict[str, Any]:
                 java_graph_to_built,
             )
             if detect_project_language(str(root_dir)) == "java":
-                built = java_graph_to_built(build_java_graph(str(root_dir)))
+                built = java_graph_to_built(build_java_graph(str(root_dir), progress_callback=progress_callback))
             else:
-                built = build_security_graph(SecurityGraphConfig(root_dir=root_dir))
+                built = build_security_graph(SecurityGraphConfig(root_dir=root_dir), progress_callback=progress_callback)
             _cache["graph"] = built
             _cache["root"] = str(root_dir)
             _security_graph = built["graph"]
         return _cache["graph"]
 
 
-def analyze_codebase(project_path: str) -> dict[str, Any]:
+def analyze_codebase(project_path: str, progress_callback=None) -> dict[str, Any]:
     global _current_graph, _current_paths, _current_high_risk
     p = Path(project_path).resolve()
     set_security_root(p)
     
-    res = get_security_graph(p)
+    res = get_security_graph(p, progress_callback=progress_callback)
     _current_graph = {
         "nodes": res.get("nodes", []),
         "links": res.get("edges", []),

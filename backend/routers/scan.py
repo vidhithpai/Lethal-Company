@@ -22,13 +22,25 @@ from backend.routers.query import update_graph_summary
 router = APIRouter(prefix="/api/cve", tags=["scan"])
 
 _scan_state: dict = {
+    "status": "idle",
     "last_path": None,
+    "scanned_files": 0,
+    "total_files": 0,
+    "current_file": None,
     "nodes": 0,
     "edges": 0,
     "sources": 0,
     "sinks": 0,
     "paths_found": 0,
 }
+
+
+def update_scan_progress(scanned: int, total: int, current_file: str = ""):
+    _scan_state["status"] = "scanning" if (total > 0 and scanned < total) else "complete"
+    _scan_state["scanned_files"] = scanned
+    _scan_state["total_files"] = total
+    if current_file:
+        _scan_state["current_file"] = current_file
 
 
 class ScanRequest(BaseModel):
@@ -99,17 +111,25 @@ def scan(req: ScanRequest):
                             detail=f"Project path must be an existing directory: {project_path}",
                         )
 
+    _scan_state.update({
+        "status": "scanning",
+        "last_path": str(p),
+        "scanned_files": 0,
+        "total_files": 0,
+        "current_file": None,
+    })
+
     # Trigger a scan (Java or Python pipeline)
     language = detect_project_language(str(p))
     java_files_exist = any(Path(p).rglob("*.java"))
     if java_files_exist:
         from backend.services.java_graph_builder import build_java_graph, java_graph_to_built, store_java_graph
-        G = build_java_graph(str(p), incremental=req.incremental)
+        G = build_java_graph(str(p), incremental=req.incremental, progress_callback=update_scan_progress)
         built = java_graph_to_built(G)
         store_java_graph(str(p), built)
     else:
         from backend.services.code_security_graph import analyze_codebase
-        built = analyze_codebase(str(p))
+        built = analyze_codebase(str(p), progress_callback=update_scan_progress)
 
     g = built["graph"]
     nodes = built["nodes"]
@@ -137,8 +157,12 @@ def scan(req: ScanRequest):
             for k, v in enode.items():
                 g.nodes[nid][k] = v
 
+    total_files_scanned = _scan_state.get("total_files") or _scan_state.get("scanned_files") or 1
     _scan_state.update({
+        "status": "complete",
         "last_path": str(p),
+        "scanned_files": total_files_scanned,
+        "total_files": total_files_scanned,
         "nodes": len(nodes),
         "edges": len(edges),
         "sources": len(sources),
@@ -208,6 +232,8 @@ def scan(req: ScanRequest):
         "message": "Scan complete",
         "project_path": str(p),
         "language": language,
+        "scanned_files": total_files_scanned,
+        "total_files": total_files_scanned,
         "nodes": len(nodes),
         "edges": len(edges),
         "sources": len(sources),

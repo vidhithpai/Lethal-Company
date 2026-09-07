@@ -91,6 +91,43 @@ function getWorkspacePath(document) {
   return wsRoot;
 }
 
+function getProjectFilesToScan(projectPath) {
+  const files = [];
+  const skipDirs = new Set(['.git', '.venv', 'venv', 'node_modules', '__pycache__', 'dist', 'build', 'target']);
+
+  function walk(dir) {
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          if (!skipDirs.has(entry.name)) {
+            walk(path.join(dir, entry.name));
+          }
+        } else if (entry.isFile()) {
+          const ext = path.extname(entry.name).toLowerCase();
+          if (ext === '.py' || ext === '.java') {
+            files.push(path.join(dir, entry.name));
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  if (projectPath) {
+    try {
+      if (fs.existsSync(projectPath)) {
+        const stat = fs.statSync(projectPath);
+        if (stat.isDirectory()) {
+          walk(projectPath);
+        } else {
+          files.push(projectPath);
+        }
+      }
+    } catch (e) {}
+  }
+  return files;
+}
+
 async function apiFetch(url, opts = {}) {
   const resp = await fetch(url, { timeout: 30000, ...opts });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -106,16 +143,58 @@ function setStatus(text, tooltip) {
 
 // ── Core Analysis ─────────────────────────────────────────────────────────────
 async function analyzeProject(projectPath, backendUrl) {
-  setStatus('$(sync~spin) VulnGraph scanning...', 'Scanning project...');
   _currentRepoPath = projectPath;
 
-  // 1. Scan
-  const scanData = await apiFetch(`${backendUrl}/api/cve/scan`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ project_path: projectPath }),
-  });
-  _lastScanData = scanData;
+  const localFiles = getProjectFilesToScan(projectPath);
+  let totalFiles = localFiles.length || 1;
+  let scannedFiles = 0;
+
+  setStatus(
+    `$(sync~spin) VulnGraph: Scanned ${scannedFiles} out of ${totalFiles}`,
+    `VulnGraph — scanning: ${projectPath}\nScanned ${scannedFiles} out of ${totalFiles} files`
+  );
+
+  let pollInterval = setInterval(async () => {
+    try {
+      const statusData = await apiFetch(`${backendUrl}/api/cve/scan/status`);
+      if (statusData && typeof statusData.total_files === 'number' && statusData.total_files > 0) {
+        totalFiles = statusData.total_files;
+        scannedFiles = typeof statusData.scanned_files === 'number' ? statusData.scanned_files : scannedFiles;
+        setStatus(
+          `$(sync~spin) VulnGraph: Scanned ${scannedFiles} out of ${totalFiles}`,
+          `VulnGraph — scanning: ${statusData.current_file || projectPath}\nScanned ${scannedFiles} out of ${totalFiles} files`
+        );
+      }
+    } catch {}
+  }, 100);
+
+  let scanData;
+  try {
+    // 1. Scan
+    scanData = await apiFetch(`${backendUrl}/api/cve/scan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_path: projectPath }),
+    });
+    _lastScanData = scanData;
+  } finally {
+    if (pollInterval) {
+      clearInterval(pollInterval);
+      pollInterval = null;
+    }
+  }
+
+  if (scanData && scanData.total_files) {
+    totalFiles = scanData.total_files;
+    scannedFiles = scanData.scanned_files || totalFiles;
+  } else {
+    scannedFiles = totalFiles;
+  }
+
+  setStatus(
+    `$(sync~spin) VulnGraph: Scanned ${scannedFiles} out of ${totalFiles}`,
+    `VulnGraph: Scanned ${scannedFiles} out of ${totalFiles} files\nFinalizing graph analysis...`
+  );
 
   // 2. Graph
   const graphData = await apiFetch(`${backendUrl}/api/graph`);
