@@ -49,8 +49,8 @@
       "properties": {
         "vulngraph.backendUrl": {
           "type": "string",
-          "default": "http://localhost:8002",
-          "description": "VulnGraph backend URL. Default: local backend at port 8002."
+          "default": "http://localhost:8001",
+          "description": "VulnGraph backend URL. Default: Docker backend at port 8001. Auto-falls back to 8002/8000."
         },
         "vulngraph.autoAnalyzeOnSave": {
           "type": "boolean",

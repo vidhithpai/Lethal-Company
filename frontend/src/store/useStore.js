@@ -7,8 +7,30 @@ const useStore = create((set, get) => ({
   graph:        EMPTY_GRAPH,
   path:         [],
   selectedNode: null,
-  explanation:  "",
   loading:      false,
+
+  // ── Project scan completion progress state ────────────────────────────────
+  scanProgress: {
+    status: "idle", // "idle" | "scanning" | "complete" | "error"
+    percent: 0,
+    scannedFiles: 0,
+    totalFiles: 0,
+    currentFile: "",
+  },
+  setScanProgress: (sp) =>
+    set((state) => ({
+      scanProgress: { ...state.scanProgress, ...sp },
+    })),
+  resetScanProgress: () =>
+    set({
+      scanProgress: {
+        status: "idle",
+        percent: 0,
+        scannedFiles: 0,
+        totalFiles: 0,
+        currentFile: "",
+      },
+    }),
 
   setGraph:       (graph)       => set({ graph }),
   setPath:        (path)        => set({ path }),

@@ -609,16 +609,17 @@ def _parse_javalang_ast(filepath: str, content: str) -> dict[str, list[dict[str,
     return result
 
 
-def parse_java_file(filepath: str) -> dict[str, list[dict[str, Any]]]:
+def parse_java_file(filepath: str, content: str | None = None) -> dict[str, list[dict[str, Any]]]:
     path = Path(filepath)
     if not path.exists() or path.suffix.lower() != ".java":
         return _empty_result()
 
     mode = os.environ.get("JAVA_CLASSIFIER_MODE", "ast").lower()
-    try:
-        content = path.read_text(encoding="utf-8")
-    except OSError:
-        return _empty_result()
+    if content is None:
+        try:
+            content = path.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            return _empty_result()
 
     if mode == "ast":
         ast_result = _parse_javalang_ast(str(path.resolve()), content)

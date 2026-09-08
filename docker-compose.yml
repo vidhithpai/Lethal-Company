@@ -9,14 +9,15 @@ services:
     env_file:
       - .env
     volumes:
+      - ./backend:/app/backend
       - ./demo_project:/app/demo_project:ro
       - ./sample_project:/app/sample_project:ro
 
       # Mount Windows drives (read-only)
-      - /mnt/c:/host/c:ro
-      - /mnt/d:/host/d:ro
-      - /mnt/e:/host/e:ro
-      - /mnt/f:/host/f:ro
+      - C:/:/host/c:ro
+      - D:/:/host/d:ro
+      - E:/:/host/e:ro
+      - F:/:/host/f:ro
 
   frontend:
     build:

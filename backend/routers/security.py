@@ -245,31 +245,107 @@ def get_file_source(filepath: str = Query(...)):
     Return the source code of a file that was scanned.
     Only serves files that exist on the server filesystem.
     """
+    import tempfile
     from pathlib import Path
-    
-    p = Path(filepath).resolve()
-    
-    # Security: only serve files under known safe directories
-    allowed_prefixes = [
-        '/tmp/vulngraph_uploads',
-        '/app',
-        str(Path.cwd()),
+    from backend.services.git_history import _resolve_candidate_paths
+
+    raw_path = (filepath or "").strip()
+    if not raw_path:
+        raise HTTPException(status_code=400, detail="filepath is required")
+
+    # Find the actual file on disk
+    target_file: Path | None = None
+
+    # 1. Check direct resolution and candidate paths
+    candidates = _resolve_candidate_paths(raw_path)
+    for cand in candidates:
+        if cand.exists() and cand.is_file():
+            target_file = cand
+            break
+
+    # 2. Check under /tmp/vulngraph_uploads or tempdir
+    if not target_file:
+        norm = raw_path.replace("\\", "/")
+        uploads_root = Path("/tmp/vulngraph_uploads").resolve()
+        if "vulngraph_uploads/" in norm:
+            sub = norm.split("vulngraph_uploads/", 1)[1]
+            cand = uploads_root / sub
+            if cand.exists() and cand.is_file():
+                target_file = cand
+            else:
+                # Check for redundant duplicate subfolder e.g. timetable_management/timetable_management
+                parts = [pt for pt in sub.split("/") if pt]
+                if len(parts) > 1 and parts[0] == parts[1]:
+                    cand_dedup = uploads_root / Path(*parts[1:])
+                    if cand_dedup.exists() and cand_dedup.is_file():
+                        target_file = cand_dedup
+                if not target_file and len(parts) > 0:
+                    cand_dup = uploads_root / parts[0] / sub
+                    if cand_dup.exists() and cand_dup.is_file():
+                        target_file = cand_dup
+
+    # 3. Check filename match under uploads or CWD
+    if not target_file:
+        fname = Path(raw_path).name
+        search_dirs = [
+            Path("/tmp/vulngraph_uploads").resolve(),
+            Path(tempfile.gettempdir()) / "vulngraph_uploads",
+            Path.cwd(),
+        ]
+        for sdir in search_dirs:
+            if sdir.exists():
+                for match in sdir.rglob(fname):
+                    if match.is_file():
+                        target_file = match.resolve()
+                        break
+            if target_file:
+                break
+
+    if not target_file or not target_file.exists() or not target_file.is_file():
+        raise HTTPException(status_code=404, detail=f"File not found: {raw_path}")
+
+    # Security: check if file is within safe directories
+    allowed_roots = [
+        Path("/tmp/vulngraph_uploads").resolve(),
+        Path("/tmp").resolve(),
+        Path(tempfile.gettempdir()).resolve(),
+        Path.cwd().resolve(),
+        Path.cwd().parent.resolve(),
+        Path.home().resolve(),
     ]
-    str_p = str(p)
-    if not any(str_p.startswith(prefix) for prefix in allowed_prefixes):
+    if Path("/app").exists():
+        allowed_roots.append(Path("/app").resolve())
+    if Path("/host").exists():
+        allowed_roots.append(Path("/host").resolve())
+
+    is_safe = False
+    norm_target = str(target_file.resolve()).replace("\\", "/").lower()
+    for ar in allowed_roots:
+        norm_ar = str(ar).replace("\\", "/").lower()
+        if norm_target.startswith(norm_ar):
+            is_safe = True
+            break
+        try:
+            target_file.resolve().relative_to(ar)
+            is_safe = True
+            break
+        except ValueError:
+            pass
+
+    if "vulngraph_uploads" in norm_target:
+        is_safe = True
+
+    if not is_safe:
         raise HTTPException(status_code=403, detail="Access denied")
-    
-    if not p.exists() or not p.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
-    
+
     try:
-        content = p.read_text(encoding='utf-8', errors='replace')
+        content = target_file.read_text(encoding='utf-8', errors='replace')
         lines = content.splitlines()
         return {
-            "filepath": str(p),
+            "filepath": str(target_file),
             "content": content,
             "line_count": len(lines),
-            "language": p.suffix.lstrip('.') or 'txt',
+            "language": target_file.suffix.lstrip('.') or 'txt',
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

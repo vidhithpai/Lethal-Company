@@ -6,8 +6,8 @@
  */
 
 const vscode = require('vscode');
-const path   = require('path');
-const fs     = require('fs');
+const path = require('path');
+const fs = require('fs');
 
 // ── Daemon state ──────────────────────────────────────────────────────────────
 const _daemon = {
@@ -103,66 +103,108 @@ const DECORATIONS = {
 };
 
 // ── Extension State ───────────────────────────────────────────────────────────
-let _lastScanData      = null;   // Result of /api/cve/scan
-let _lastGraph         = null;   // Result of /api/graph
-let _lastAttackPaths   = [];     // Result of /api/attack-paths
-let _lastTimeline      = null;   // Result of /api/tdra/timeline
-let _riskPanel         = null;   // WebviewPanel for TDRA risk dashboard
-let _statusBarItem     = null;
-let _saveDebounce      = null;
-let _currentRepoPath   = null;
-let _currentGitRoot    = null;
+let _lastScanData = null;   // Result of /api/cve/scan
+let _lastGraph = null;   // Result of /api/graph
+let _lastAttackPaths = [];     // Result of /api/attack-paths
+let _lastTimeline = null;   // Result of /api/tdra/timeline
+let _riskPanel = null;   // WebviewPanel for TDRA risk dashboard
+let _statusBarItem = null;
+let _saveDebounce = null;
+let _currentRepoPath = null;
+let _currentGitRoot = null;
 let _taintTreeProvider = null;
-let _codeLensProvider  = null;
+let _codeLensProvider = null;
 let _pinnedProjectPath = null;   // Explicitly chosen project path — set via "VulnGraph: Select Project & Scan"
 
-// ── Robust Path Matching Helper (Cross-Platform / Windows-Safe) ───────────────
+// ── Robust Path Matching Helper (Cross-Platform / Windows & Docker Safe) ─────
+function normalizeHostPath(filePath) {
+  if (!filePath) return '';
+  let p = String(filePath).replace(/\\/g, '/').trim();
+  // Map Docker container paths like /host/c/... or /mnt/c/... back to Windows C:/...
+  const m = p.match(/^(\/host|\/mnt)\/([a-zA-Z])\/(.*)$/);
+  if (m) {
+    return `${m[2].toUpperCase()}:/${m[3]}`;
+  }
+  return p;
+}
+
 function isSameFile(file1, file2) {
   if (!file1 || !file2) return false;
-  const n1 = String(file1).replace(/\\/g, '/').toLowerCase().trim();
-  const n2 = String(file2).replace(/\\/g, '/').toLowerCase().trim();
+  const n1 = normalizeHostPath(file1).toLowerCase();
+  const n2 = normalizeHostPath(file2).toLowerCase();
   if (n1 === n2) return true;
-  if (n1.endsWith('/' + n2) || n2.endsWith('/' + n1)) return true;
-  if (n1.endsWith(n2) || n2.endsWith(n1)) return true;
-  const b1 = path.basename(n1);
-  const b2 = path.basename(n2);
-  return b1 === b2;
+
+  // Handle absolute vs relative paths
+  const clean1 = n1.replace(/^[a-z]:\//, '/').replace(/^\/+/, '');
+  const clean2 = n2.replace(/^[a-z]:\//, '/').replace(/^\/+/, '');
+  if (clean1 === clean2) return true;
+  if (clean1.endsWith('/' + clean2) || clean2.endsWith('/' + clean1)) return true;
+
+  // Segment-based comparison from the end to avoid false positives across identically-named files
+  const segs1 = n1.split('/').filter(Boolean);
+  const segs2 = n2.split('/').filter(Boolean);
+  if (segs1.length > 0 && segs2.length > 0) {
+    const b1 = segs1[segs1.length - 1];
+    const b2 = segs2[segs2.length - 1];
+    if (b1 !== b2) return false;
+    // If both have directory context, compare immediate parent folders
+    if (segs1.length >= 2 && segs2.length >= 2) {
+      return segs1[segs1.length - 2] === segs2[segs2.length - 2];
+    }
+    return true;
+  }
+  return false;
 }
 
 // ── Configuration Helper ──────────────────────────────────────────────────────
 function getConfig() {
   const cfg = vscode.workspace.getConfiguration('vulngraph');
   return {
-    backendUrl:           cfg.get('backendUrl', 'http://localhost:8001'),
-    autoAnalyze:          cfg.get('autoAnalyzeOnSave', true),
-    showGuards:           cfg.get('showGuardDecorations', true),
-    enableCodeLens:       cfg.get('enableCodeLens', true),
+    backendUrl: cfg.get('backendUrl', 'http://localhost:8001'),
+    autoAnalyze: cfg.get('autoAnalyzeOnSave', true),
+    showGuards: cfg.get('showGuardDecorations', true),
+    enableCodeLens: cfg.get('enableCodeLens', true),
   };
 }
 
+let _resolvedBackendUrl = null;
+
 async function resolveBackendUrl(configured) {
-  // Try the configured URL first
-  try {
-    const resp = await fetch(`${configured}/api/health`, 
-                             { signal: AbortSignal.timeout(2000) });
-    if (resp.ok || resp.status < 500) return configured;
-  } catch {}
-  
-  // Try the alternate port (8001 ↔ 8002)
-  const alternate = configured.includes(':8001')
-    ? configured.replace(':8001', ':8002')
-    : configured.replace(':8002', ':8001');
-  
-  try {
-    const resp = await fetch(`${alternate}/api/health`,
-                             { signal: AbortSignal.timeout(2000) });
-    if (resp.ok || resp.status < 500) {
-      console.log(`[VulnGraph] Using alternate backend: ${alternate}`);
-      return alternate;
-    }
-  } catch {}
-  
+  const candidates = [
+    configured,
+    'http://localhost:8001',
+    'http://localhost:8002',
+    'http://localhost:8000',
+    'http://127.0.0.1:8001',
+    'http://127.0.0.1:8002',
+    'http://127.0.0.1:8000',
+  ];
+  const uniqueUrls = [...new Set(candidates.filter(Boolean))];
+  for (const url of uniqueUrls) {
+    try {
+      const resp = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(1500) });
+      if (resp.ok || resp.status < 500) {
+        if (url !== configured) {
+          console.log(`[VulnGraph] Connected to backend at ${url} (configured: ${configured})`);
+        }
+        _resolvedBackendUrl = url;
+        return url;
+      }
+    } catch { }
+  }
+  _resolvedBackendUrl = configured;
   return configured; // return configured even if both fail — will error normally
+}
+
+async function getBackendUrl() {
+  if (_resolvedBackendUrl) {
+    try {
+      const resp = await fetch(`${_resolvedBackendUrl}/api/health`, { signal: AbortSignal.timeout(1000) });
+      if (resp.ok || resp.status < 500) return _resolvedBackendUrl;
+    } catch { }
+  }
+  const { backendUrl } = getConfig();
+  return await resolveBackendUrl(backendUrl);
 }
 
 function getWorkspacePath(document) {
@@ -170,44 +212,47 @@ function getWorkspacePath(document) {
   // This is the most reliable signal — the user has explicitly told us what to scan.
   if (_pinnedProjectPath) return _pinnedProjectPath;
 
-  // PRIMARY: walk up from the open file to find .git root
-  // This gives TDRA the actual git repository — critical for real commits
-  const startDir = document
-    ? path.dirname(document.uri.fsPath)
-    : vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-
-  if (startDir) {
-    let dir = startDir;
-    for (let i = 0; i < 10; i++) {
-      try {
-        if (fs.existsSync(path.join(dir, '.git'))) {
-          // Confirm this is not the VulnGraph tool itself
-          // by checking if the user's file is inside this git root
-          if (document && document.uri.fsPath.startsWith(dir)) {
-            return dir;
-          }
-          // No document context — just return this git root
-          if (!document) return dir;
+  // PRIORITY 1: If an open document is inside a workspace folder, check for subproject root
+  if (document && vscode.workspace.workspaceFolders) {
+    const docPath = document.uri.fsPath.toLowerCase();
+    for (const folder of vscode.workspace.workspaceFolders) {
+      const folderPath = folder.uri.fsPath.toLowerCase();
+      if (docPath.startsWith(folderPath)) {
+        // If the document is in a subproject that has its own project manifest or .git, use that directory
+        const docDir = path.dirname(document.uri.fsPath);
+        if (fs.existsSync(path.join(docDir, '.git')) ||
+            fs.existsSync(path.join(docDir, 'requirements.txt')) ||
+            fs.existsSync(path.join(docDir, 'pom.xml')) ||
+            fs.existsSync(path.join(docDir, 'package.json'))) {
+          return docDir;
         }
-      } catch {}
-      const parent = path.dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
+        return folder.uri.fsPath;
+      }
     }
   }
 
-  // SECONDARY: use VS Code workspace folder
+  // PRIORITY 2: VS Code workspace folder
   if (vscode.workspace.workspaceFolders?.length > 0) {
     return vscode.workspace.workspaceFolders[0].uri.fsPath;
   }
 
+  // PRIORITY 3: Active document's directory
   if (document) return path.dirname(document.uri.fsPath);
   return null;
 }
 
 async function apiFetch(url, opts = {}) {
   const resp = await fetch(url, { timeout: 30000, ...opts });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  if (!resp.ok) {
+    let detail = `HTTP ${resp.status}`;
+    try {
+      const errJson = await resp.json();
+      if (errJson && errJson.detail) {
+        detail += `: ${errJson.detail}`;
+      }
+    } catch { }
+    throw new Error(detail);
+  }
   return resp.json();
 }
 
@@ -244,16 +289,25 @@ function getCweTitle(cwe) {
 
 function findGitRoot(startPath) {
   if (!startPath) return null;
-  let dir = startPath;
-  for (let i = 0; i < 10; i++) {
-    try {
-      if (fs.existsSync(path.join(dir, '.git'))) return dir;
-    } catch {}
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return startPath;
+  try {
+    // 1. Direct .git inside startPath
+    if (fs.existsSync(path.join(startPath, '.git'))) {
+      return startPath;
+    }
+    // 2. Immediate subdirectories (for unzipped project wrappers like repo_name/repo_name/.git)
+    if (fs.existsSync(startPath) && fs.statSync(startPath).isDirectory()) {
+      const entries = fs.readdirSync(startPath, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() && !['.git', 'node_modules', '.venv', 'venv', '__pycache__', 'dist', 'build'].includes(entry.name)) {
+          const sub = path.join(startPath, entry.name);
+          if (fs.existsSync(path.join(sub, '.git'))) {
+            return sub;
+          }
+        }
+      }
+    }
+  } catch (e) { }
+  return null;
 }
 
 function getProjectFilesToScan(projectPath) {
@@ -275,7 +329,7 @@ function getProjectFilesToScan(projectPath) {
           }
         }
       }
-    } catch (e) {}
+    } catch (e) { }
   }
 
   if (projectPath) {
@@ -288,7 +342,7 @@ function getProjectFilesToScan(projectPath) {
           files.push(projectPath);
         }
       }
-    } catch (e) {}
+    } catch (e) { }
   }
   return files;
 }
@@ -296,7 +350,18 @@ function getProjectFilesToScan(projectPath) {
 // ── Core Analysis Routine ─────────────────────────────────────────────────────
 async function analyzeProject(projectPath, backendUrl, notifyUser = false) {
   _currentRepoPath = projectPath;
-  _currentGitRoot  = findGitRoot(projectPath);
+  _currentGitRoot = findGitRoot(projectPath);
+
+  // Clear previous project data immediately to avoid stale state between project switches
+  _lastScanData = null;
+  _lastGraph = null;
+  _lastAttackPaths = [];
+  _lastTimeline = null;
+  vscode.window.visibleTextEditors.forEach(ed => {
+    Object.values(DECORATIONS).forEach(dec => ed.setDecorations(dec, []));
+  });
+  if (_taintTreeProvider) _taintTreeProvider.refresh([], { nodes: [] });
+  if (_codeLensProvider) _codeLensProvider.refresh();
 
   const localFiles = getProjectFilesToScan(projectPath);
   let totalFiles = localFiles.length || 1;
@@ -319,7 +384,7 @@ async function analyzeProject(projectPath, backendUrl, notifyUser = false) {
           `VulnGraph — scanning: ${statusData.current_file || projectPath}\nScanned ${scannedFiles} out of ${totalFiles} files`
         );
       }
-    } catch {}
+    } catch { }
   }, 100);
 
   let scanData;
@@ -370,6 +435,11 @@ async function analyzeProject(projectPath, backendUrl, notifyUser = false) {
     _codeLensProvider.refresh();
   }
 
+  // Immediately apply decorations to all open visible editors
+  vscode.window.visibleTextEditors.forEach(ed => {
+    applyDecorations(ed.document, _lastGraph);
+  });
+
   // 5. Update Status and Notifications
   const projectName = path.basename(projectPath);
   const sourcesCount = scanData.sources || 0;
@@ -408,16 +478,17 @@ async function analyzeProject(projectPath, backendUrl, notifyUser = false) {
       ` gitRoot=${tdraPath}` +
       (reason ? ` reason=${reason}` : '')
     );
-    
+
     // Show user if still showing mock
     if (src === 'mock' && reason) {
       vscode.window.setStatusBarMessage(
         `VulnGraph TDRA: ${reason}`, 6000
       );
     }
-    
-    const editor = vscode.window.activeTextEditor;
-    if (editor && _lastGraph) applyDecorations(editor.document, _lastGraph);
+
+    vscode.window.visibleTextEditors.forEach(ed => {
+      if (_lastGraph) applyDecorations(ed.document, _lastGraph);
+    });
     if (_riskPanel) refreshRiskPanel();
   }).catch(err => {
     console.log('[VulnGraph TDRA] timeline failed:', err.message);
@@ -428,8 +499,8 @@ async function analyzeProject(projectPath, backendUrl, notifyUser = false) {
 
 async function analyzeFile(document) {
   const ext = path.extname(document.fileName).toLowerCase();
-  if (!['.py', '.java'].includes(ext) && 
-      !['python', 'java'].includes(document.languageId)) return;
+  if (!['.py', '.java'].includes(ext) &&
+    !['python', 'java'].includes(document.languageId)) return;
 
   const { backendUrl: configuredUrl } = getConfig();
   const backendUrl = await resolveBackendUrl(configuredUrl);
@@ -446,7 +517,7 @@ async function analyzeFile(document) {
     const rfText = latestCommit
       ? (rfValue != null ? ` | RF ${rfValue.toFixed(2)} (${latestCommit.severity || 'Low'})` : ` | (${latestCommit.severity || 'Low'})`)
       : '';
-    
+
     const criticalSinks = (_lastGraph?.nodes || []).filter(
       n => n.type === 'sink' && ((n.residual_risk || 0) > 0.7 || String(n.risk).toUpperCase() === 'CRITICAL')
     );
@@ -490,28 +561,28 @@ async function autoScanWorkspace() {
 async function runIncrementalScan(triggerDoc, context) {
   if (_daemon.scanning) return;  // don't stack scans
   _daemon.scanning = true;
-  
+
   const { backendUrl: configuredUrl } = getConfig();
   const backendUrl = await resolveBackendUrl(configuredUrl);
   const projectPath = getWorkspacePath(triggerDoc);
   if (!projectPath) { _daemon.scanning = false; return; }
-  
+
   _daemon.projectPath = projectPath;
   const localFiles = getProjectFilesToScan(projectPath);
   let totalFiles = localFiles.length || 1;
   let scannedFiles = 0;
   setStatus(`$(sync~spin) VulnGraph: Scanned ${scannedFiles} out of ${totalFiles}`, `VulnGraph — incremental scan: ${projectPath}`);
-  
+
   try {
     const now = Date.now();
-    const needsFullScan = !_daemon.lastFullScan 
+    const needsFullScan = !_daemon.lastFullScan
       || (now - _daemon.lastFullScan) > _daemon.FULL_SCAN_INTERVAL_MS;
-    
+
     if (needsFullScan) {
       // Full scan — POST with no changed_files hint
       const result = await apiFetch(`${backendUrl}/api/cve/scan`, {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ project_path: projectPath }),
       });
       _lastScanData = result;
@@ -528,7 +599,7 @@ async function runIncrementalScan(triggerDoc, context) {
       totalFiles = changedFiles.length || 1;
       const result = await apiFetch(`${backendUrl}/api/cve/scan`, {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           project_path: projectPath,
           changed_files: changedFiles,   // backend uses manifest
@@ -540,33 +611,33 @@ async function runIncrementalScan(triggerDoc, context) {
     }
     _daemon.lastIncrementalScan = now;
     setStatus(`$(sync~spin) VulnGraph: Scanned ${scannedFiles} out of ${totalFiles}`, 'Finalizing graph analysis...');
-    
+
     // Refresh graph after scan
     const graphData = await apiFetch(`${backendUrl}/api/graph`);
     _lastGraph = graphData;
-    
+
     // Apply decorations
     const editor = vscode.window.activeTextEditor;
     if (editor) applyDecorations(editor.document, graphData);
-    
+
     // Non-blocking TDRA refresh
     const tdraPath = findGitRoot(projectPath);
     apiFetch(`${backendUrl}/api/tdra/timeline` +
-             `?repo_path=${encodeURIComponent(tdraPath)}&limit=20`)
+      `?repo_path=${encodeURIComponent(tdraPath)}&limit=20`)
       .then(d => { _lastTimeline = d; if (_riskPanel) refreshRiskPanel(); })
-      .catch(() => {});
-    
+      .catch(() => { });
+
     const sinks = (_lastScanData?.sinks || 0);
     const rf = _lastTimeline?.timeline?.slice(-1)[0]?.risk_factor;
     const rfStr = rf != null ? ` · RF ${rf.toFixed(2)}` : '';
-    setStatus(`$(shield) VulnGraph: ${sinks} sinks${rfStr}`, 
-              `Last scan: ${new Date().toLocaleTimeString()}`);
-    
+    setStatus(`$(shield) VulnGraph: ${sinks} sinks${rfStr}`,
+      `Last scan: ${new Date().toLocaleTimeString()}`);
+
     if (_riskPanel) refreshRiskPanel();
-    
+
   } catch (err) {
-    setStatus('$(warning) VulnGraph: backend offline', 
-              'Start: ./scripts/start_extension_backend.sh');
+    setStatus('$(warning) VulnGraph: backend offline',
+      'Start: ./scripts/start_extension_backend.sh');
   } finally {
     _daemon.scanning = false;
   }
@@ -574,14 +645,20 @@ async function runIncrementalScan(triggerDoc, context) {
 
 // ── In-Editor Decorations (Prominent Colors & Matching) ────────────────────────
 function applyDecorations(document, graphData) {
-  const editor = vscode.window.visibleTextEditors.find(
-    e => e.document.uri.toString() === document.uri.toString()
-  ) || vscode.window.activeTextEditor;
-  if (!editor) return;
+  if (!document || !graphData) return;
 
   const { showGuards } = getConfig();
   const nodes = Array.isArray(graphData) ? graphData : (graphData?.nodes || []);
   const docFile = document.uri.fsPath;
+
+  // Find all visible editors displaying this document
+  const targetEditors = vscode.window.visibleTextEditors.filter(
+    e => e.document.uri.toString() === document.uri.toString() || isSameFile(e.document.uri.fsPath, docFile)
+  );
+  if (targetEditors.length === 0 && vscode.window.activeTextEditor && isSameFile(vscode.window.activeTextEditor.document.uri.fsPath, docFile)) {
+    targetEditors.push(vscode.window.activeTextEditor);
+  }
+  if (targetEditors.length === 0) return;
 
   const ranges = { source: [], sink: [], sanitizer: [], critical_sink: [], new_path: [] };
 
@@ -591,45 +668,57 @@ function applyDecorations(document, graphData) {
   for (const node of nodes) {
     if (!isSameFile(docFile, node.file)) continue;
 
-    const lineNo = (node.line || 1) - 1;
+    const rawLine = typeof node.line === 'number' ? node.line : parseInt(node.line, 10);
+    const lineNo = rawLine > 0 ? rawLine - 1 : 0;
     if (lineNo < 0 || lineNo >= document.lineCount) continue;
 
     const lineRange = document.lineAt(lineNo).range;
+    const ntype = String(node.type || '').toLowerCase();
+    const isSource = (ntype === 'source' || ntype === 'entry');
+    const isSink = (ntype === 'sink');
+    const isGuard = (ntype === 'sanitizer' || ntype === 'guard');
     const isNewPath = newPathNodes.has(node.id);
-    const isCritical = node.type === 'sink' && ((node.residual_risk != null && node.residual_risk > 0.7) || String(node.risk).toUpperCase() === 'CRITICAL');
+    const isCritical = isSink && ((node.residual_risk != null && node.residual_risk > 0.7) || String(node.risk).toUpperCase() === 'CRITICAL');
 
-    const nodeTypeUpper = (node.type || 'UNKNOWN').toUpperCase();
+    let nodeTypeTitle = 'SECURITY NODE';
+    if (isSource) nodeTypeTitle = 'ENTRY (Source)';
+    else if (isSink) nodeTypeTitle = isCritical ? 'CRITICAL SINK (Vulnerable)' : 'SINK (Vulnerable)';
+    else if (isGuard) nodeTypeTitle = 'GUARD (Sanitizer)';
+
     const hoverMsg = new vscode.MarkdownString(
-      `### VulnGraph [${nodeTypeUpper}]\n\n` +
+      `### 🛡️ VulnGraph [${nodeTypeTitle}]\n\n` +
       `- **Label:** \`${node.label || node.id}\`\n` +
-      `- **File:** \`${node.file || 'unknown'}:${node.line || 1}\`\n` +
-      (node.cwe ? `- **CWE:** \`${node.cwe}\` — ${node.cwe_name || getCweTitle(node.cwe)}\n` : '') +
+      `- **File:** \`${path.basename(node.file || docFile)}:${node.line || 1}\`\n` +
+      (node.cwe ? `- **CWE:** \`${node.cwe}\` — **${node.cwe_name || getCweTitle(node.cwe)}**\n` : '') +
       (node.residual_risk != null ? `- **Residual Risk:** \`${node.residual_risk.toFixed(3)}\`\n` : '') +
       (node.effective_guard_strength != null
-        ? `- **Guard Strength:** \`${(node.effective_guard_strength * 100).toFixed(0)}%\`\n` : '') +
-      (node.git_blame && node.git_blame.author ? `- **Git Attribution:** ${node.git_blame.author} (${node.git_blame.commit || 'uncommitted'}, ${node.git_blame.date || ''})\n` : '') +
-      (isNewPath ? '\n**[NOTICE] This node appears in a new attack path introduced by the latest commit.**' : '')
+        ? `- **Guard Strength:** \`${(node.effective_guard_strength * 100).toFixed(0)}%\` attenuation (${node.guard_basis || 'pattern'})\n` : '') +
+      (node.git_blame && node.git_blame.author && node.git_blame.commit !== 'uncommitted'
+        ? `- **Git Attribution:** ${node.git_blame.author} (\`${node.git_blame.commit}\`, ${node.git_blame.date || ''})\n` : '') +
+      (isNewPath ? '\n⚠️ **[ALERT] This node appears in a new attack path introduced by the latest commit.**' : '')
     );
     hoverMsg.isTrusted = true;
 
     const rangeEntry = { range: lineRange, hoverMessage: hoverMsg };
 
-    if (isNewPath) {
-      ranges.new_path.push(rangeEntry);
-    } else if (isCritical) {
+    if (isCritical) {
       ranges.critical_sink.push(rangeEntry);
-    } else if (node.type === 'source') {
-      ranges.source.push(rangeEntry);
-    } else if (node.type === 'sink') {
+    } else if (isSink) {
       ranges.sink.push(rangeEntry);
-    } else if (node.type === 'sanitizer' && showGuards) {
+    } else if (isSource) {
+      ranges.source.push(rangeEntry);
+    } else if (isGuard && showGuards) {
       ranges.sanitizer.push(rangeEntry);
+    } else if (isNewPath) {
+      ranges.new_path.push(rangeEntry);
     }
   }
 
-  Object.entries(DECORATIONS).forEach(([key, dec]) => {
-    if (key === 'step_highlight') return;
-    editor.setDecorations(dec, ranges[key] || []);
+  targetEditors.forEach(editor => {
+    Object.entries(DECORATIONS).forEach(([key, dec]) => {
+      if (key === 'step_highlight') return;
+      editor.setDecorations(dec, ranges[key] || []);
+    });
   });
 }
 
@@ -705,7 +794,7 @@ class VulnGraphTaintTreeProvider {
       return pathNodes.map((nodeId, i) => {
         const nodeInfo = nodesMap.get(nodeId) || {};
         const nodeType = nodeInfo.type || (i === 0 ? 'source' : i === pathNodes.length - 1 ? 'sink' : 'intermediate');
-        
+
         let stepTag = '[VAR]';
         let iconName = 'symbol-variable';
 
@@ -788,11 +877,17 @@ class VulnGraphCodeLensProvider {
     const docNodes = nodes.filter(n => isSameFile(docFile, n.file));
 
     for (const node of docNodes) {
-      const lineNo = (node.line || 1) - 1;
+      const rawLine = typeof node.line === 'number' ? node.line : parseInt(node.line, 10);
+      const lineNo = rawLine > 0 ? rawLine - 1 : 0;
       if (lineNo < 0 || lineNo >= document.lineCount) continue;
       const range = new vscode.Range(lineNo, 0, lineNo, 0);
 
-      if (node.type === 'source') {
+      const ntype = String(node.type || '').toLowerCase();
+      const isSource = (ntype === 'source' || ntype === 'entry');
+      const isSink = (ntype === 'sink');
+      const isGuard = (ntype === 'sanitizer' || ntype === 'guard');
+
+      if (isSource) {
         const reachedPaths = attackPaths.filter(p => Array.isArray(p.path) && p.path.includes(node.id));
         const reachedSinks = reachedPaths.map(p => p.path[p.path.length - 1]);
         const uniqueSinks = [...new Set(reachedSinks)];
@@ -811,21 +906,25 @@ class VulnGraphCodeLensProvider {
             tooltip: `View dataflow attack paths in sidebar tree.`,
           })
         );
-      } else if (node.type === 'sink') {
+      } else if (isSink) {
         const cwe = node.cwe || 'CWE-Unknown';
         const residualRisk = node.residual_risk != null ? node.residual_risk : normalizeRisk(node.risk || 0.85);
         const blame = node.git_blame;
-        const blameStr = blame && blame.author ? `${blame.commit || ''} (${blame.author})` : 'uncommitted';
+        const blameStr = blame && blame.author && blame.commit !== 'uncommitted'
+          ? `${blame.commit} (${blame.author})`
+          : (blame && blame.commit === 'uncommitted' ? 'uncommitted' : 'none');
 
         lenses.push(
           new vscode.CodeLens(range, {
-            title: `VulnGraph: [${cwe} ${node.sink_kind || 'Execution Sink'}] | [Residual Risk: ${residualRisk.toFixed(2)}] | [Blame: ${blameStr}]`,
+            title: `VulnGraph: [${cwe}] | [Residual Risk: ${residualRisk.toFixed(2)}] | [Blame: ${blameStr}]`,
             command: 'vulngraph.openDashboard',
             tooltip: `CWE: ${cwe}. Residual Risk after guard attenuation: ${residualRisk.toFixed(3)}. Introduced by ${blameStr}.`,
           })
         );
-      } else if ((node.type === 'sanitizer' || node.type === 'guard') && showGuards) {
-        const att = node.effective_guard_strength != null ? (node.effective_guard_strength * 100).toFixed(0) : '65';
+      } else if (isGuard && showGuards) {
+        const att = node.effective_guard_strength != null
+          ? (node.effective_guard_strength * 100).toFixed(0)
+          : (node.attenuation != null ? (node.attenuation * 100).toFixed(0) : '65');
         const basis = node.guard_basis || 'name';
         lenses.push(
           new vscode.CodeLens(range, {
@@ -838,6 +937,84 @@ class VulnGraphCodeLensProvider {
     }
 
     return lenses;
+  }
+}
+
+// ── 2b. Hover Provider: Rich Security Metrics & Git Attribution ────────────────
+class VulnGraphHoverProvider {
+  provideHover(document, position, token) {
+    const docFile = document.uri.fsPath;
+    const nodes = _lastGraph?.nodes || [];
+    const attackPaths = _lastAttackPaths || [];
+    const lineNo = position.line + 1; // 1-based line
+
+    const docNodes = nodes.filter(n => isSameFile(docFile, n.file) && ((n.line || 1) === lineNo));
+    if (docNodes.length === 0) return null;
+
+    const latestCommit = _lastTimeline?.timeline?.slice(-1)[0];
+    const newPathNodes = new Set((latestCommit?.new_paths_detail || []).flat());
+
+    const md = new vscode.MarkdownString();
+    md.isTrusted = true;
+
+    docNodes.forEach((node, idx) => {
+      if (idx > 0) md.appendMarkdown('\n---\n');
+
+      const ntype = String(node.type || 'unknown').toLowerCase();
+      let typeLabel = 'SECURITY NODE';
+      if (ntype === 'source' || ntype === 'entry') typeLabel = 'ENTRY (Source)';
+      else if (ntype === 'sink') typeLabel = 'SINK (Vulnerable Execution)';
+      else if (ntype === 'sanitizer' || ntype === 'guard') typeLabel = 'GUARD (Sanitizer)';
+
+      const isNewPath = newPathNodes.has(node.id);
+      const isCritical = ntype === 'sink' && ((node.residual_risk != null && node.residual_risk > 0.7) || String(node.risk).toUpperCase() === 'CRITICAL');
+
+      md.appendMarkdown(`### 🛡️ VulnGraph [${typeLabel}]\n\n`);
+      md.appendMarkdown(`- **Identifier:** \`${node.id || node.label}\`\n`);
+      md.appendMarkdown(`- **Location:** \`${path.basename(node.file || docFile)}:${node.line || lineNo}\`\n`);
+
+      if (node.cwe) {
+        md.appendMarkdown(`- **CWE:** \`${node.cwe}\` — **${node.cwe_name || getCweTitle(node.cwe)}**\n`);
+      }
+
+      if (node.residual_risk != null) {
+        const riskVal = node.residual_risk.toFixed(3);
+        const riskTag = isCritical ? ' *(CRITICAL RISK)*' : '';
+        md.appendMarkdown(`- **Residual Risk:** \`${riskVal}\`${riskTag}\n`);
+      } else if (node.risk != null) {
+        md.appendMarkdown(`- **Initial Risk:** \`${node.risk}\`\n`);
+      }
+
+      if (node.effective_guard_strength != null) {
+        md.appendMarkdown(`- **Guard Strength:** \`${(node.effective_guard_strength * 100).toFixed(0)}%\` attenuation (${node.guard_basis || 'pattern'})\n`);
+      } else if (ntype === 'sanitizer' || ntype === 'guard') {
+        const att = node.attenuation != null ? (node.attenuation * 100).toFixed(0) : '65';
+        md.appendMarkdown(`- **Guard Strength:** \`${att}%\` attenuation (${node.guard_basis || 'pattern'})\n`);
+      }
+
+      if (node.git_blame && node.git_blame.author && node.git_blame.commit !== 'uncommitted') {
+        md.appendMarkdown(`- **Git Attribution:** \`${node.git_blame.commit}\` by **${node.git_blame.author}** on ${node.git_blame.date || 'unknown'}\n`);
+        if (node.git_blame.message) {
+          md.appendMarkdown(`  *Commit summary:* "${node.git_blame.message}"\n`);
+        }
+      } else if (node.git_blame?.commit === 'uncommitted') {
+        md.appendMarkdown(`- **Git Attribution:** *Uncommitted local changes*\n`);
+      }
+
+      // Attack path context
+      const relatedPaths = attackPaths.filter(p => Array.isArray(p.path) && p.path.includes(node.id));
+      if (relatedPaths.length > 0) {
+        const reachedSinks = [...new Set(relatedPaths.map(p => p.path[p.path.length - 1]))];
+        md.appendMarkdown(`- **Differential Attack Paths:** Active in **${relatedPaths.length}** attack path(s) reaching **${reachedSinks.length}** distinct sink(s)\n`);
+      }
+
+      if (isNewPath) {
+        md.appendMarkdown(`\n⚠️ **[ALERT] This security node was introduced or modified in a new attack path by the latest commit.**\n`);
+      }
+    });
+
+    const lineRange = document.lineAt(position.line).range;
+    return new vscode.Hover(md, lineRange);
   }
 }
 
@@ -878,26 +1055,35 @@ class VulnGraphCodeActionProvider {
 async function jumpToLocation(loc) {
   if (!loc || !loc.file) return;
 
+  const hostFile = normalizeHostPath(loc.file);
   let targetUri = null;
-  if (path.isAbsolute(loc.file) && fs.existsSync(loc.file)) {
+  if (path.isAbsolute(hostFile) && fs.existsSync(hostFile)) {
+    targetUri = vscode.Uri.file(hostFile);
+  } else if (path.isAbsolute(loc.file) && fs.existsSync(loc.file)) {
     targetUri = vscode.Uri.file(loc.file);
   } else if (_currentRepoPath) {
-    const candidate = path.join(_currentRepoPath, loc.file);
-    if (fs.existsSync(candidate)) targetUri = vscode.Uri.file(candidate);
+    const candidate1 = path.join(_currentRepoPath, hostFile);
+    const candidate2 = path.join(_currentRepoPath, loc.file);
+    if (fs.existsSync(candidate1)) targetUri = vscode.Uri.file(candidate1);
+    else if (fs.existsSync(candidate2)) targetUri = vscode.Uri.file(candidate2);
   }
 
   if (!targetUri && vscode.workspace.workspaceFolders) {
     for (const folder of vscode.workspace.workspaceFolders) {
-      const candidate = path.join(folder.uri.fsPath, loc.file);
-      if (fs.existsSync(candidate)) {
-        targetUri = vscode.Uri.file(candidate);
+      const candidate1 = path.join(folder.uri.fsPath, hostFile);
+      const candidate2 = path.join(folder.uri.fsPath, loc.file);
+      if (fs.existsSync(candidate1)) {
+        targetUri = vscode.Uri.file(candidate1);
+        break;
+      } else if (fs.existsSync(candidate2)) {
+        targetUri = vscode.Uri.file(candidate2);
         break;
       }
     }
   }
 
   if (!targetUri) {
-    const baseName = path.basename(loc.file);
+    const baseName = path.basename(hostFile || loc.file);
     const found = await vscode.workspace.findFiles(`**/${baseName}`, null, 1);
     if (found.length > 0) targetUri = found[0];
   }
@@ -1259,7 +1445,7 @@ function refreshRiskPanel() {
             ${shortHash}
           </a>
         </td>
-        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.message||''}">
+        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${c.message || ''}">
           ${c.message || '—'}
         </td>
         <td style="color:#8B949E;font-size:11px">${c.author || '—'}</td>
@@ -1294,7 +1480,7 @@ function refreshRiskPanel() {
 
   const criticalCount = timeline.filter(c => (c.risk_factor || 0) >= 0.7).length;
   const newPathsTotal = timeline.reduce((a, c) => a + (c.new_attack_paths || 0), 0);
-  const guardEvents   = timeline.reduce((a, c) => a + (c.guard_weakening_events || 0), 0);
+  const guardEvents = timeline.reduce((a, c) => a + (c.guard_weakening_events || 0), 0);
 
   // Avg RF score: prefer residual risk from attack paths (always populated after scan).
   // Fall back to TDRA timeline RF only when no attack paths are available.
@@ -1324,23 +1510,29 @@ function refreshRiskPanel() {
   }
   const avgRFColor = avgRFRaw == null ? '#8B949E'
     : avgRFRaw >= 0.7 ? '#FF4444'
-    : avgRFRaw >= 0.45 ? '#FF9500'
-    : avgRFRaw >= 0.2 ? '#FFD700'
-    : '#1D9E75';
+      : avgRFRaw >= 0.45 ? '#FF9500'
+        : avgRFRaw >= 0.2 ? '#FFD700'
+          : '#1D9E75';
   const avgRFLabel = avgRFSource === 'path' ? 'Avg Residual Risk' : 'Avg RF Score';
-  const srcReason     = _lastTimeline?.reason || '';
+  const srcReason = _lastTimeline?.reason || '';
   let srcLabel = '⚪ NOT SCANNED';
   if (isScanned && scannedNodesCount > 0) {
-    srcLabel = _lastTimeline?.source === 'live'
-      ? '🟢 LIVE'
-      : (_lastTimeline?.source === 'mock' ? `🟡 DEMO${srcReason ? ' — ' + srcReason : ''}` : '🟢 LIVE');
+    if (_lastTimeline?.source === 'no_git') {
+      srcLabel = '⚪ NO GIT REPO';
+    } else if (_lastTimeline?.source === 'live') {
+      srcLabel = '🟢 LIVE';
+    } else if (_lastTimeline?.source === 'mock') {
+      srcLabel = `🟡 DEMO${srcReason ? ' — ' + srcReason : ''}`;
+    } else {
+      srcLabel = '🟢 LIVE';
+    }
   }
 
   const scannedFolder = _currentRepoPath ? path.basename(_currentRepoPath) : 'Active Workspace';
 
   const callGraphHtml = generateCallGraphSvg(_lastGraph, _lastAttackPaths);
   const waterfallHtml = generateWaterfallSvg(_lastAttackPaths);
-  const matrixHtml    = generateMatrixSvg(_lastGraph, timeline);
+  const matrixHtml = generateMatrixSvg(_lastGraph, timeline);
 
   _riskPanel.webview.html = `<!DOCTYPE html>
 <html lang="en">
@@ -1441,7 +1633,7 @@ function refreshRiskPanel() {
       <th>Commit</th><th>Message</th><th>Author</th>
       <th>Severity</th><th>Risk Factor</th><th>Detail</th>
     </tr></thead>
-    <tbody>${commitRows || '<tr><td colspan="6" style="text-align:center;color:#6E7681;padding:20px">No commit data. Save a file or run workspace scan to analyze.</td></tr>'}</tbody>
+    <tbody>${commitRows || ('<tr><td colspan="6" style="text-align:center;color:#6E7681;padding:20px">' + (_lastTimeline?.source === 'no_git' ? 'Git history unavailable (this project is not a Git repository).' : 'No commit data. Save a file or run workspace scan to analyze.') + '</td></tr>')}</tbody>
   </table>
 </div>
 
@@ -1535,22 +1727,41 @@ function refreshRiskPanel() {
   window.addEventListener('message', e => {
     const { type, data } = e.data;
     if (type === 'validationResult') {
-      const sig = data.statistically_significant;
-      const d   = data.cliffs_delta || 0;
-      const p   = data.p_value || 1;
+      if (data.error && (!data.sample_sizes || data.sample_sizes.vcc === 0)) {
+        document.getElementById('validation-result').innerHTML = \`
+          <div class="result-box">
+            <div class="verdict-bad" style="font-size:14px;margin-bottom:8px">
+              \${data.verdict || '[ERROR] Validation Failed'}
+            </div>
+            <div style="color:#F85149;font-size:12px;margin-bottom:8px">\${data.error}</div>
+            <div style="color:#8B949E;font-size:11px;line-height:1.5">
+              \${data.detail || data.interpretation || 'Please verify that the commit hash exists in the repository.'}
+            </div>
+            <div style="margin-top:8px;font-size:11px;color:#6E7681">
+              Samples analyzed: VCC=\${data.sample_sizes?.vcc ?? 0} / non-VCC=\${data.sample_sizes?.non_vcc ?? 0}
+            </div>
+          </div>\`;
+        return;
+      }
+      const sig = Boolean(data.statistically_significant);
+      const d   = typeof data.cliffs_delta === 'number' ? data.cliffs_delta : 0;
+      const p   = typeof data.p_value === 'number' ? data.p_value : 1;
+      const vccMean = typeof data.vcc_mean === 'number' ? data.vcc_mean.toFixed(4) : (data.vcc_mean || '—');
+      const nonVccMean = typeof data.non_vcc_mean === 'number' ? data.non_vcc_mean.toFixed(4) : (data.non_vcc_mean || '—');
+      const verdict = data.verdict || (sig ? '[VALIDATED] TDRA Statistical Separation Confirmed' : '[INCONCLUSIVE] Not Statistically Significant');
       document.getElementById('validation-result').innerHTML = \`
         <div class="result-box">
           <div class="\${sig ? 'verdict-ok' : 'verdict-bad'}" style="font-size:14px;margin-bottom:10px">
-            \${sig ? '[VALIDATED] TDRA Statistical Separation Confirmed' : '[INCONCLUSIVE] Not Statistically Significant'}
+            \${verdict}
           </div>
           <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:10px">
-            <div><span style="color:#6E7681">p-value:</span> <strong>\${p.toFixed(6)}</strong></div>
-            <div><span style="color:#6E7681">Cliff's delta:</span> <strong>\${d.toFixed(4)}</strong></div>
+            <div><span style="color:#6E7681">p-value:</span> <strong>\${typeof p === 'number' ? p.toFixed(6) : p}</strong></div>
+            <div><span style="color:#6E7681">Cliff's delta:</span> <strong>\${typeof d === 'number' ? d.toFixed(4) : d}</strong></div>
             <div><span style="color:#6E7681">Effect size:</span> <strong>\${data.effect_size || '—'}</strong></div>
-            <div><span style="color:#6E7681">VCC mean RF:</span> <strong>\${data.vcc_mean || '—'}</strong></div>
-            <div><span style="color:#6E7681">Non-VCC mean RF:</span> <strong>\${data.non_vcc_mean || '—'}</strong></div>
+            <div><span style="color:#6E7681">VCC mean RF:</span> <strong>\${vccMean}</strong></div>
+            <div><span style="color:#6E7681">Non-VCC mean RF:</span> <strong>\${nonVccMean}</strong></div>
             <div><span style="color:#6E7681">Samples:</span> 
-              <strong>VCC=\${data.sample_sizes?.vcc||0} / non-VCC=\${data.sample_sizes?.non_vcc||0}</strong></div>
+              <strong>VCC=\${data.sample_sizes?.vcc ?? 0} / non-VCC=\${data.sample_sizes?.non_vcc ?? 0}</strong></div>
           </div>
           <div style="color:#8B949E;font-size:11px;line-height:1.6">\${data.interpretation || ''}</div>
         </div>\`;
@@ -1577,12 +1788,12 @@ function openRiskPanel(context) {
   _riskPanel.onDidDispose(() => { _riskPanel = null; }, null, context.subscriptions);
 
   _riskPanel.webview.onDidReceiveMessage(async msg => {
-    const { backendUrl } = getConfig();
+    const backendUrl = await getBackendUrl();
     if (msg.command === 'getAttackPaths') {
       try {
         const data = await apiFetch(`${backendUrl}/api/attack-paths`);
         _riskPanel.webview.postMessage({ type: 'attackPaths', data });
-      } catch (e) {}
+      } catch (e) { }
     }
     if (msg.command === 'validate' && _currentRepoPath && msg.hashes) {
       try {
@@ -1592,11 +1803,21 @@ function openRiskPanel(context) {
           body: JSON.stringify({
             repo_path: _currentRepoPath,
             known_vcc_hashes: msg.hashes,
-            limit: 100,
+            limit: 30,
           }),
         });
         _riskPanel.webview.postMessage({ type: 'validationResult', data });
-      } catch (e) {}
+      } catch (e) {
+        _riskPanel.webview.postMessage({
+          type: 'validationResult',
+          data: {
+            error: e.message || 'Validation request failed',
+            verdict: '[ERROR] Request Failed',
+            detail: 'Failed to connect to backend or request timed out. Please ensure backend is running.',
+            sample_sizes: { vcc: 0, non_vcc: 0 }
+          }
+        });
+      }
     }
     if (msg.command === 'exportReport') {
       try {
@@ -1678,6 +1899,13 @@ function activate(context) {
       new VulnGraphCodeActionProvider(),
       { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix, vscode.CodeActionKind.RefactorRewrite] }
     )
+  );
+
+  // 4b. Hover Provider: Inline Security Metrics, CWE, Risk & Git Blame
+  const hoverProvider = new VulnGraphHoverProvider();
+  context.subscriptions.push(
+    vscode.languages.registerHoverProvider({ language: 'python' }, hoverProvider),
+    vscode.languages.registerHoverProvider({ language: 'java' }, hoverProvider)
   );
 
   // 5. Command Registrations
@@ -1763,18 +1991,18 @@ function activate(context) {
       const { backendUrl: configured } = getConfig();
       const resolved = await resolveBackendUrl(configured);
       const doc = vscode.window.activeTextEditor?.document;
-      const ws  = getWorkspacePath(doc);
+      const ws = getWorkspacePath(doc);
       const git = ws ? findGitRoot(ws) : 'none';
-      
+
       let tdraStatus = 'not fetched';
       try {
         const d = await apiFetch(
           `${resolved}/api/tdra/timeline?repo_path=${encodeURIComponent(git)}&limit=2`
         );
         tdraStatus = `source=${d.source} commits=${d.timeline?.length}` +
-                     (d.reason ? ` (${d.reason})` : '');
+          (d.reason ? ` (${d.reason})` : '');
       } catch (e) { tdraStatus = `error: ${e.message}`; }
-      
+
       const msg = [
         `Backend configured: ${configured}`,
         `Backend resolved:   ${resolved}`,
@@ -1784,9 +2012,9 @@ function activate(context) {
         `Last scan sinks:    ${_lastScanData?.sinks || 0}`,
         `Timeline commits:   ${_lastTimeline?.timeline?.length || 0}`,
       ].join('\n');
-      
-      vscode.window.showInformationMessage('VulnGraph Diagnostics', 
-                                            { detail: msg, modal: true }, 'OK');
+
+      vscode.window.showInformationMessage('VulnGraph Diagnostics',
+        { detail: msg, modal: true }, 'OK');
       console.log('[VulnGraph Diagnostics]\n' + msg);
     }),
 
@@ -1803,7 +2031,7 @@ function activate(context) {
     }),
 
     vscode.commands.registerCommand('vulngraph.simulatePatchNode', async (nodeId) => {
-      const { backendUrl } = getConfig();
+      const backendUrl = await getBackendUrl();
       if (!nodeId) return;
       try {
         const res = await apiFetch(`${backendUrl}/api/graph/patch/${encodeURIComponent(nodeId)}`, {
@@ -1821,7 +2049,7 @@ function activate(context) {
     }),
 
     vscode.commands.registerCommand('vulngraph.exportReport', async () => {
-      const { backendUrl } = getConfig();
+      const backendUrl = await getBackendUrl();
       try {
         const resp = await fetch(`${backendUrl}/api/report/html`);
         const html = await resp.text();
@@ -1841,7 +2069,7 @@ function activate(context) {
     }),
 
     vscode.commands.registerCommand('vulngraph.runValidation', async () => {
-      const { backendUrl } = getConfig();
+      const backendUrl = await getBackendUrl();
       const input = await vscode.window.showInputBox({
         prompt: 'Enter known CVE commit hashes (comma-separated)',
         placeHolder: 'abc1234, def5678, ...',
@@ -1852,12 +2080,20 @@ function activate(context) {
         const result = await apiFetch(`${backendUrl}/api/tdra/validate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ repo_path: _currentRepoPath, known_vcc_hashes: hashes, limit: 100 }),
+          body: JSON.stringify({ repo_path: _currentRepoPath, known_vcc_hashes: hashes, limit: 30 }),
         });
+        if (result.error && (!result.sample_sizes || result.sample_sizes.vcc === 0)) {
+          vscode.window.showErrorMessage(`VulnGraph validation: ${result.error} — ${result.detail || ''}`);
+          return;
+        }
         const sig = result.statistically_significant;
+        const vCount = result.sample_sizes?.vcc ?? 0;
+        const nvCount = result.sample_sizes?.non_vcc ?? 0;
         vscode.window.showInformationMessage(
-          `VulnGraph validation: ${sig ? 'SIGNIFICANT' : 'NOT SIGNIFICANT'} ` +
-          `(p=${result.p_value?.toFixed(4)}, delta=${result.cliffs_delta?.toFixed(3)})`
+          `VulnGraph validation: ${result.verdict || (sig ? 'SIGNIFICANT' : 'NOT SIGNIFICANT')} ` +
+          `(p=${typeof result.p_value === 'number' ? result.p_value.toFixed(4) : result.p_value}, ` +
+          `delta=${typeof result.cliffs_delta === 'number' ? result.cliffs_delta.toFixed(3) : result.cliffs_delta}, ` +
+          `VCC=${vCount}, non-VCC=${nvCount})`
         );
       } catch (e) {
         vscode.window.showErrorMessage('Validation failed: ' + e.message);
@@ -1865,7 +2101,7 @@ function activate(context) {
     }),
 
     vscode.commands.registerCommand('vulngraph.checkCommitRisk', async () => {
-      const { backendUrl } = getConfig();
+      const backendUrl = await getBackendUrl();
       if (!_currentRepoPath) {
         _currentRepoPath = getWorkspacePath(null);
       }
@@ -1935,13 +2171,13 @@ function activate(context) {
       const { autoAnalyze } = getConfig();
       if (!autoAnalyze) return;
       const ext = path.extname(doc.fileName).toLowerCase();
-      if (!['.py','.java'].includes(ext)) return;
-      
+      if (!['.py', '.java'].includes(ext)) return;
+
       // Add to queue and debounce
       if (!_daemon.scanQueue.includes(doc.uri.fsPath)) {
         _daemon.scanQueue.push(doc.uri.fsPath);
       }
-      
+
       clearTimeout(_daemon._debounceTimer);
       _daemon._debounceTimer = setTimeout(async () => {
         await runIncrementalScan(doc, context);
@@ -1949,10 +2185,18 @@ function activate(context) {
     })
   );
 
-  // 7. Re-apply decorations on editor switch
+  // 7. Re-apply decorations on editor switch, visible editors change, or document open
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor(editor => {
       if (editor && _lastGraph) applyDecorations(editor.document, _lastGraph);
+    }),
+    vscode.window.onDidChangeVisibleTextEditors(editors => {
+      editors.forEach(editor => {
+        if (_lastGraph) applyDecorations(editor.document, _lastGraph);
+      });
+    }),
+    vscode.workspace.onDidOpenTextDocument(document => {
+      if (_lastGraph) applyDecorations(document, _lastGraph);
     })
   );
 

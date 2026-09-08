@@ -28,14 +28,15 @@ app = FastAPI(
     description="AST-based security graph analysis with AI-powered query and git blame",
 )
 
+try:
+    import subprocess
+    subprocess.run(["git", "config", "--global", "--add", "safe.directory", "*"], capture_output=True)
+except Exception:
+    pass
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origin_regex=r".*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

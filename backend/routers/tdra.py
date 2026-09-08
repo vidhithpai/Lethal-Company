@@ -103,14 +103,62 @@ def run_validation(req: ValidationRequest):
     if not git_root:
         raise HTTPException(status_code=400, detail=f"No git repository found for path: {repo_path}")
 
+    # Clean and normalize input target hashes
+    clean_vcc_hashes = set()
+    for h in req.known_vcc_hashes:
+        c = h.strip().lower()
+        if c:
+            clean_vcc_hashes.add(c)
+
+    def is_target_vcc(c_hash: str) -> bool:
+        if not c_hash:
+            return False
+        c_low = c_hash.lower()
+        for target in clean_vcc_hashes:
+            if c_low == target or c_low.startswith(target) or target.startswith(c_low[:7]):
+                return True
+        return False
+
     try:
-        results, _ = _get_analyzed_commit_results(git_root, req.limit)
-        vcc_scores = [r.get("risk_factor", r.get("rf_score", 0.0)) for r in results 
-                      if r.get("commit_hash") in req.known_vcc_hashes
-                      or r.get("commit_hash", "")[:7] in req.known_vcc_hashes]
-        non_vcc_scores = [r.get("risk_factor", r.get("rf_score", 0.0)) for r in results
-                          if r.get("commit_hash") not in req.known_vcc_hashes
-                          and r.get("commit_hash", "")[:7] not in req.known_vcc_hashes]
+        engine = DifferentialEngine(git_root)
+        results = []
+
+        # Check if we already have warm cached commit results for this git_root
+        now = time.time()
+        cached = None
+        for (k_root, _), (ts, c_results) in _ANALYSIS_CACHE.items():
+            if k_root == git_root and (now - ts < _CACHE_TTL_SECONDS) and len(c_results) >= 10:
+                cached = c_results
+                break
+
+        if cached is not None:
+            results = [dict(c) for c in cached]
+        else:
+            eff_limit = min(req.limit, 30) if req.limit > 30 else max(req.limit, 15)
+            c_results, _ = _get_analyzed_commit_results(git_root, eff_limit)
+            results = [dict(c) for c in c_results]
+
+        # Check if all requested target VCC hashes are present in results.
+        # If any target hash is not in results, directly analyze it via git commit lookup
+        analyzed_hashes = {r.get("commit_hash", "").lower() for r in results}
+        for target in clean_vcc_hashes:
+            matched = any(
+                ah == target or ah.startswith(target) or target.startswith(ah[:7])
+                for ah in analyzed_hashes
+            )
+            if not matched:
+                try:
+                    commit_obj = engine.repo.commit(target)
+                    p_hash = commit_obj.parents[0].hexsha if commit_obj.parents else None
+                    single_res = engine.analyze_commit(p_hash, commit_obj.hexsha)
+                    results.insert(0, single_res)
+                    analyzed_hashes.add(commit_obj.hexsha.lower())
+                except Exception:
+                    pass
+
+        vcc_scores = [r.get("risk_factor", r.get("rf_score", 0.0)) for r in results if is_target_vcc(r.get("commit_hash", ""))]
+        non_vcc_scores = [r.get("risk_factor", r.get("rf_score", 0.0)) for r in results if not is_target_vcc(r.get("commit_hash", ""))]
+
         report = _validate(vcc_scores, non_vcc_scores)
         report["total_commits_analyzed"] = len(results)
         return report
@@ -299,7 +347,7 @@ async def get_tdra_timeline(repo_path: str = Query(...), limit: int = Query(50))
         # Fallback to direct git commit extraction without differential graph calculation
         try:
             import git
-            repo = git.Repo(git_root, search_parent_directories=True)
+            repo = git.Repo(git_root, search_parent_directories=False)
             commits = []
             for c in list(repo.iter_commits(max_count=limit)):
                 commits.append({

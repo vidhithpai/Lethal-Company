@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
@@ -855,91 +856,108 @@ def compute_attack_surface() -> list[dict[str, Any]]:
     return [dict(data) for nid, data in g.nodes(data=True) if data.get("type") == "source"]
 
 
-import time
+import logging
+logger = logging.getLogger(__name__)
+
+MAX_PATHS_PER_PAIR = 5
 
 _last_path_stats = {
     "pairs_checked": 0,
     "total_paths_found": 0,
     "path_enumeration_time": 0.0,
     "attenuation_time": 0.0,
+    "warning": None,
 }
 
 def get_last_path_stats() -> dict:
     return dict(_last_path_stats)
 
-def find_attack_paths(G, sources, sinks, max_depth=15):
+def find_attack_paths(G, sources, sinks, max_depth=15, max_paths_per_pair=MAX_PATHS_PER_PAIR):
     global _last_path_stats
     paths = []
     pairs_checked = 0
     total_paths_found = 0
     path_enum_time = 0.0
     attenuation_time = 0.0
+    warning = None
+
+    if len(sources) * len(sinks) > 2000:
+        warning = "large graph, path enumeration limited"
+        logger.warning(
+            f"Large graph: {len(sources)} sources * {len(sinks)} sinks = "
+            f"{len(sources) * len(sinks)} pairs (> 2000). Path enumeration limited."
+        )
 
     for src in sources:
         for sink in sinks:
             pairs_checked += 1
+            if not nx.has_path(G, src, sink):
+                continue
             t_pe = time.perf_counter()
+            paths_found = 0
             try:
-                found_paths = list(nx.all_simple_paths(G, src, sink, cutoff=max_depth))
-            except (nx.NetworkXNoPath, nx.NodeNotFound):
-                found_paths = []
-            except Exception:
-                found_paths = []
-            path_enum_time += time.perf_counter() - t_pe
+                for path in nx.all_simple_paths(G, src, sink, cutoff=max_depth):
+                    paths_found += 1
+                    total_paths_found += 1
+                    guards = [n for n in path
+                              if G.nodes[n].get('type') in ('sanitizer', 'guard')]
+                    
+                    t_att = time.perf_counter()
+                    attenuation_result = compute_path_residual_risk(path, G, sink)
+                    attenuation_time += time.perf_counter() - t_att
 
-            for path in found_paths:
-                total_paths_found += 1
-                guards = [n for n in path
-                          if G.nodes[n].get('type') in ('sanitizer', 'guard')]
-                
-                t_att = time.perf_counter()
-                attenuation_result = compute_path_residual_risk(path, G, sink)
-                attenuation_time += time.perf_counter() - t_att
+                    risk = attenuation_result["residual_risk"]
+                    guard_density = attenuation_result["effective_guard_strength"]
 
-                risk = attenuation_result["residual_risk"]
-                guard_density = attenuation_result["effective_guard_strength"]
-
-                sink_scores = [
-                    float(G.nodes[n].get("risk_score", 9.0))
-                    for n in path if G.nodes[n].get("type") == "sink"
-                ]
-                edge_weights = []
-                for i in range(len(path) - 1):
-                    edge_data = G.get_edge_data(path[i], path[i + 1]) or {}
-                    edge_weights.append(float(edge_data.get("weight", 1.0)))
-                rf_contribution = round(
-                    (
-                        (sum(sink_scores) if sink_scores else risk * 10.0) * 0.55
-                        + (sum(edge_weights) if edge_weights else 1.0) * 0.45
+                    sink_scores = [
+                        float(G.nodes[n].get("risk_score", 9.0))
+                        for n in path if G.nodes[n].get("type") == "sink"
+                    ]
+                    edge_weights = []
+                    for i in range(len(path) - 1):
+                        edge_data = G.get_edge_data(path[i], path[i + 1]) or {}
+                        edge_weights.append(float(edge_data.get("weight", 1.0)))
+                    rf_contribution = round(
+                        (
+                            (sum(sink_scores) if sink_scores else risk * 10.0) * 0.55
+                            + (sum(edge_weights) if edge_weights else 1.0) * 0.45
+                        )
+                        / max(len(path), 1)
+                        / 10.0,
+                        4,
                     )
-                    / max(len(path), 1)
-                    / 10.0,
-                    4,
-                )
 
-                if sink in G.nodes:
-                    cur_rr = float(G.nodes[sink].get("residual_risk", 0.0))
-                    if risk > cur_rr:
-                        G.nodes[sink]["residual_risk"] = risk
+                    if sink in G.nodes:
+                        cur_rr = float(G.nodes[sink].get("residual_risk", 0.0))
+                        if risk > cur_rr:
+                            G.nodes[sink]["residual_risk"] = risk
 
-                paths.append({
-                    "path": path,
-                    "guards": guards,
-                    "guard_density": guard_density,
-                    "risk": risk,
-                    "rf_contribution": rf_contribution,
-                    "residual_risk": attenuation_result["residual_risk"],
-                    "effective_guard_strength": attenuation_result["effective_guard_strength"],
-                    "guard_attenuations": attenuation_result["guard_attenuations"],
-                    "cwe": attenuation_result["cwe"],
-                    "sink_category": attenuation_result["sink_category"],
-                })
+                    paths.append({
+                        "path": path,
+                        "guards": guards,
+                        "guard_density": guard_density,
+                        "risk": risk,
+                        "rf_contribution": rf_contribution,
+                        "residual_risk": attenuation_result["residual_risk"],
+                        "effective_guard_strength": attenuation_result["effective_guard_strength"],
+                        "guard_attenuations": attenuation_result["guard_attenuations"],
+                        "cwe": attenuation_result["cwe"],
+                        "sink_category": attenuation_result["sink_category"],
+                    })
+                    if paths_found >= max_paths_per_pair:
+                        break
+            except (nx.NetworkXNoPath, nx.NodeNotFound):
+                pass
+            except Exception:
+                pass
+            path_enum_time += time.perf_counter() - t_pe
 
     _last_path_stats = {
         "pairs_checked": pairs_checked,
         "total_paths_found": total_paths_found,
         "path_enumeration_time": path_enum_time,
         "attenuation_time": attenuation_time,
+        "warning": warning,
     }
     return sorted(paths, key=lambda x: x["risk"], reverse=True)
 

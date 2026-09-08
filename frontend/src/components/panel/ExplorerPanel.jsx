@@ -373,7 +373,7 @@ const EDGE_TYPE_ITEMS = [
   { key: "implements", label: "Implements", color: "#EC4899" },
 ];
 
-export default function ExplorerPanel({ collapsed, onToggle }) {
+export default function ExplorerPanel({ collapsed, onToggle, onScan }) {
   // Panel navigation state
   const [activeSection, setActiveSection] = useState("explorer"); // 'explorer' | 'filters'
   const [isPanelOpen, setIsPanelOpen] = useState(!collapsed);
@@ -711,6 +711,53 @@ export default function ExplorerPanel({ collapsed, onToggle }) {
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
           </svg>
+        </button>
+
+        {/* Subtle Divider */}
+        <div style={{ width: 24, height: 1, background: "rgba(255, 255, 255, 0.08)", margin: "8px 0" }} />
+
+        {/* Scan New Project Action Button */}
+        <button
+          type="button"
+          onClick={onScan}
+          title="Scan New Project"
+          style={{
+            width: 40,
+            padding: "6px 2px 5px",
+            borderRadius: 8,
+            background: "linear-gradient(180deg, rgba(6, 182, 212, 0.15) 0%, rgba(37, 99, 235, 0.15) 100%)",
+            border: "1px solid rgba(6, 182, 212, 0.4)",
+            color: "#38BDF8",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 3,
+            cursor: "pointer",
+            transition: "all 0.18s cubic-bezier(0.16, 1, 0.3, 1)",
+            boxShadow: "0 0 10px rgba(6, 182, 212, 0.15)",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = "linear-gradient(180deg, rgba(6, 182, 212, 0.3) 0%, rgba(37, 99, 235, 0.3) 100%)";
+            e.currentTarget.style.color = "#FFFFFF";
+            e.currentTarget.style.borderColor = "rgba(6, 182, 212, 0.8)";
+            e.currentTarget.style.boxShadow = "0 0 16px rgba(6, 182, 212, 0.45)";
+            e.currentTarget.style.transform = "translateY(-1px)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "linear-gradient(180deg, rgba(6, 182, 212, 0.15) 0%, rgba(37, 99, 235, 0.15) 100%)";
+            e.currentTarget.style.color = "#38BDF8";
+            e.currentTarget.style.borderColor = "rgba(6, 182, 212, 0.4)";
+            e.currentTarget.style.boxShadow = "0 0 10px rgba(6, 182, 212, 0.15)";
+            e.currentTarget.style.transform = "none";
+          }}
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="currentColor" fillOpacity="0.3" />
+          </svg>
+          <span style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase", lineHeight: 1 }}>
+            Scan
+          </span>
         </button>
       </div>
 

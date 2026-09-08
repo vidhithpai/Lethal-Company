@@ -19,6 +19,8 @@ const App = () => {
   const attackPath = useStore((state) => state.path);
   const setPath = useStore((state) => state.setPath);
   const patchNodeLocal = useStore((state) => state.patchNodeLocal);
+  const setScanProgress = useStore((state) => state.setScanProgress);
+  const resetScanProgress = useStore((state) => state.resetScanProgress);
   
   const [explorerCollapsed, setExplorerCollapsed] = useState(false);
   const [repoPath, setRepoPath] = useState("./demo_project");
@@ -78,8 +80,19 @@ const App = () => {
     if (!files || files.length === 0) return false;
 
     setLoading(true);
+    resetScanProgress();
+    setScanProgress({
+      status: "scanning",
+      percent: 0,
+      scannedFiles: 0,
+      totalFiles: files.length,
+      currentFile: "Uploading repository files...",
+    });
     setExplanation(`Uploading and analyzing ${files.length} files...`);
     
+    // Close the upload modal immediately so user sees the progress indicator on the dashboard
+    setShowUploadModal(false);
+
     const formData = new FormData();
     const folderName = files[0].webkitRelativePath 
       ? files[0].webkitRelativePath.split('/')[0] 
@@ -99,7 +112,33 @@ const App = () => {
       formData.append("files", file, file.webkitRelativePath || file.name);
     }
 
+    let pollInterval = null;
+
     try {
+      // Poll actual backend scan progress
+      pollInterval = setInterval(async () => {
+        try {
+          const statusRes = await fetch(endpoints.scanStatus);
+          if (statusRes.ok) {
+            const data = await statusRes.json();
+            if (data.status === "scanning" || data.status === "complete") {
+              const total = data.total_files || files.length;
+              const scanned = data.scanned_files || 0;
+              const pct = total > 0 ? Math.min(99, Math.round((scanned / total) * 100)) : 0;
+              setScanProgress({
+                status: data.status,
+                percent: pct,
+                scannedFiles: scanned,
+                totalFiles: total,
+                currentFile: data.current_file || "",
+              });
+            }
+          }
+        } catch (e) {
+          console.debug("[Scan Status] Poll error:", e);
+        }
+      }, 200);
+
       const res = await fetch(endpoints.scanUpload, {
         method: "POST",
         body: formData
@@ -121,19 +160,42 @@ const App = () => {
           .then(data => setAttackPaths(data.paths || data))
           .catch(console.error);
 
-        setShowUploadModal(false);
+        // Mark 100% complete
+        setScanProgress({
+          status: "complete",
+          percent: 100,
+          scannedFiles: files.length,
+          totalFiles: files.length,
+          currentFile: "Scan complete",
+        });
+
         return true;
       } else {
         const err = await res.json();
+        setScanProgress({
+          status: "error",
+          percent: 0,
+          scannedFiles: 0,
+          totalFiles: 0,
+          currentFile: "Scan failed",
+        });
         alert("Upload failed: " + (err.detail || err.error || "Unknown error"));
         setExplanation("Scan failed.");
         return false;
       }
     } catch (err) {
+      setScanProgress({
+        status: "error",
+        percent: 0,
+        scannedFiles: 0,
+        totalFiles: 0,
+        currentFile: "Scan failed",
+      });
       alert("Error contacting backend: " + err.message);
       setExplanation("Scan failed.");
       return false;
     } finally {
+      if (pollInterval) clearInterval(pollInterval);
       setLoading(false);
     }
   };
@@ -165,29 +227,19 @@ const App = () => {
         />
       )}
 
-      {/* LEFT: Explorer panel */}
+      {/* LEFT: Explorer panel with Scan New Project in sidebar */}
       <ExplorerPanel
         collapsed={explorerCollapsed}
         onToggle={() => setExplorerCollapsed(c => !c)}
+        onScan={() => setShowUploadModal(true)}
       />
 
       {/* CENTER + RIGHT: Main Security Analysis Layout */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-        <MetricsBar onScan={() => setShowUploadModal(true)} />
+        <MetricsBar />
         <div className="main-layout" style={{ display: "flex", flex: 1, overflow: "hidden" }}>
           <div className="graph-wrap" style={{ flex: 1, position: "relative" }}>
             <GraphCanvas onNodeClick={setSelectedNode} />
-
-            {/* Floating Query Button (Matches Reference Screenshots) */}
-            <button
-              type="button"
-              className="floating-query-btn"
-              onClick={() => setPanelTab(prev => prev === "ai" ? "node" : "ai")}
-              title="Open AI Security Intelligence Query"
-            >
-              <span className="query-btn-icon">&gt;_</span>
-              <span className="query-btn-text">Query</span>
-            </button>
           </div>
           <div style={{ width: "30%", minWidth: "300px", height: "100%" }}>
             <UnifiedPanel

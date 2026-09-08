@@ -2,7 +2,7 @@
   "name": "vulngraph",
   "displayName": "VulnGraph Security Analyzer",
   "description": "Commit-level TDRA security analysis — ENTRY/SINK/GUARD decorations, dataflow explorer, CodeLens metrics, risk dashboard, statistical validation. All local.",
-  "version": "0.2.0",
+  "version": "0.2.3",
   "publisher": "vulngraph-dev",
   "repository": { "type": "git", "url": "https://github.com/vulngraph/vulngraph" },
   "scripts": {

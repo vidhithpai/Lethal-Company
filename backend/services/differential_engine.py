@@ -17,6 +17,67 @@ from backend.services.depth_budget import compute_depth_budget
 from backend.services.git_history import find_git_root
 
 
+def extract_files_at_commit(repo_path: str, commit_hash: str, 
+                             rel_paths: list[str], out_dir: str) -> list[str]:
+    """Extract multiple files at a commit with ONE subprocess call using git archive."""
+    import io
+    import tarfile
+    if not rel_paths:
+        return []
+
+    clean_paths: list[str] = []
+    for p in rel_paths:
+        try:
+            r = str(Path(p).relative_to(repo_path)).replace("\\", "/")
+        except ValueError:
+            r = str(Path(p)).replace("\\", "/")
+        clean_paths.append(r)
+
+    # Filter to paths existing in this commit tree to prevent pathspec errors
+    try:
+        ls_res = subprocess.run(
+            ["git", "ls-tree", "-r", "--name-only", commit_hash] + clean_paths,
+            capture_output=True, cwd=repo_path, text=True, errors="replace"
+        )
+        valid_paths = [line.strip() for line in ls_res.stdout.splitlines() if line.strip()]
+    except Exception:
+        valid_paths = clean_paths
+
+    if not valid_paths:
+        return []
+
+    try:
+        result = subprocess.run(
+            ["git", "archive", commit_hash] + valid_paths,
+            capture_output=True, cwd=repo_path, check=True
+        )
+        with tarfile.open(fileobj=io.BytesIO(result.stdout)) as tar:
+            tar.extractall(out_dir)
+    except Exception:
+        # Fallback to per-file extraction if git archive fails on edge-case paths
+        extracted = []
+        for rel in valid_paths:
+            p_out = Path(out_dir) / rel
+            p_out.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                c_res = subprocess.run(
+                    ["git", "show", f"{commit_hash}:{rel}"],
+                    capture_output=True, cwd=repo_path, check=True
+                )
+                p_out.write_bytes(c_res.stdout)
+                extracted.append(str(p_out))
+            except Exception:
+                pass
+        return extracted
+
+    extracted_files = []
+    for vp in valid_paths:
+        dest = Path(out_dir) / vp
+        if dest.exists():
+            extracted_files.append(str(dest))
+    return extracted_files
+
+
 class DifferentialEngine:
     def __init__(self, repo_path: str):
         git_root = find_git_root(repo_path)
@@ -24,7 +85,7 @@ class DifferentialEngine:
             self.repo_path = git_root
         else:
             self.repo_path = str(Path(repo_path).resolve())
-        self.repo = git.Repo(self.repo_path, search_parent_directories=True)
+        self.repo = git.Repo(self.repo_path, search_parent_directories=False)
         self._graph_cache: dict[str, nx.DiGraph] = {}
 
     def get_commit_pairs(self, limit: int = 50) -> list[tuple[str | None, str]]:
@@ -197,6 +258,9 @@ class DifferentialEngine:
         for src in sources:
             per_entry = 0
             for sink in sinks:
+                if not nx.has_path(G, src, sink):
+                    continue
+                paths_found_pair = 0
                 try:
                     for path in nx.all_simple_paths(
                         G, src, sink, cutoff=budget.max_depth
@@ -204,6 +268,9 @@ class DifferentialEngine:
                         paths.add(tuple(path))
                         per_entry += 1
                         total     += 1
+                        paths_found_pair += 1
+                        if paths_found_pair >= 5:
+                            break
                         # Per-entry cap
                         if per_entry >= budget.max_paths_per_entry:
                             break
@@ -247,43 +314,8 @@ class DifferentialEngine:
                 parent_tmp = tempfile.mkdtemp(prefix="tdra_parent_")
                 curr_tmp = tempfile.mkdtemp(prefix="tdra_curr_")
                 try:
-                    parent_changed = []
-                    curr_changed = []
-                    for rel_path in changed_files:
-                        try:
-                            rel = str(Path(rel_path).relative_to(self.repo_path))
-                        except ValueError:
-                            rel = Path(rel_path).name
-                        
-                        # Parent version
-                        p_out = Path(parent_tmp) / rel
-                        p_out.parent.mkdir(parents=True, exist_ok=True)
-                        try:
-                            p_res = subprocess.run(
-                                ["git", "show", f"{parent_hash}:{rel}"],
-                                capture_output=True,
-                                cwd=self.repo_path, check=True
-                            )
-                            p_content = p_res.stdout.decode("utf-8", errors="replace")
-                            p_out.write_text(p_content, encoding="utf-8", errors="replace")
-                            parent_changed.append(str(p_out))
-                        except subprocess.CalledProcessError:
-                            pass
-
-                        # Current version
-                        c_out = Path(curr_tmp) / rel
-                        c_out.parent.mkdir(parents=True, exist_ok=True)
-                        try:
-                            c_res = subprocess.run(
-                                ["git", "show", f"{commit_hash}:{rel}"],
-                                capture_output=True,
-                                cwd=self.repo_path, check=True
-                            )
-                            c_content = c_res.stdout.decode("utf-8", errors="replace")
-                            c_out.write_text(c_content, encoding="utf-8", errors="replace")
-                            curr_changed.append(str(c_out))
-                        except subprocess.CalledProcessError:
-                            pass
+                    parent_changed = extract_files_at_commit(self.repo_path, parent_hash, changed_files, parent_tmp)
+                    curr_changed = extract_files_at_commit(self.repo_path, commit_hash, changed_files, curr_tmp)
 
                     from .code_security_graph import build_graph_for_path
                     from .java_graph_builder import build_java_graph
@@ -304,21 +336,7 @@ class DifferentialEngine:
                 G_prev = nx.DiGraph()
                 curr_tmp = tempfile.mkdtemp(prefix="tdra_curr_root_")
                 try:
-                    for rel_path in changed_files[:50]:
-                        try:
-                            rel = str(Path(rel_path).relative_to(self.repo_path))
-                        except ValueError:
-                            rel = Path(rel_path).name
-                        c_out = Path(curr_tmp) / rel
-                        c_out.parent.mkdir(parents=True, exist_ok=True)
-                        try:
-                            c_res = subprocess.run(
-                                ["git", "show", f"{commit_hash}:{rel}"],
-                                capture_output=True, cwd=self.repo_path, check=True
-                            )
-                            c_out.write_bytes(c_res.stdout)
-                        except Exception:
-                            pass
+                    curr_changed = extract_files_at_commit(self.repo_path, commit_hash, changed_files[:50], curr_tmp)
                     from .code_security_graph import build_graph_for_path
                     from .java_graph_builder import build_java_graph
                     jf = list(Path(curr_tmp).rglob("*.java"))

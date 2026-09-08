@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import os
 import re
+import time
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
 import networkx as nx
 
 from backend.services.java_parser_bridge import parse_java_file, _collect_method_body
+from backend.services.parse_cache import get_cached_parse, store_parsed
 
 SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", "dist", "build", "target"}
 
@@ -41,14 +44,8 @@ def _node_id(filepath: str, line: int, node_type: str, name: str, root: Path | s
     return f"{rel}::{name}"
 
 
-def _read_file_methods(filepath: str) -> dict[str, str]:
-    try:
-        content = Path(filepath).read_text(encoding="utf-8")
-    except OSError:
-        return {}
-
+def _extract_methods_from_lines(lines: list[str]) -> dict[str, str]:
     methods: dict[str, str] = {}
-    lines = content.splitlines()
     i = 0
 
     while i < len(lines):
@@ -72,58 +69,15 @@ def _read_file_methods(filepath: str) -> dict[str, str]:
 
     return methods
 
-def build_symbol_table(project_path: str) -> dict:
-    """
-    Builds a scope-aware symbol table.
-    Returns {
-      "by_class": {"ClassName.methodName": node_id, ...},
-      "by_name":  {"methodName": [node_id, ...], ...},  # list — may be ambiguous
-      "class_files": {"ClassName": filepath, ...}        # for receiver typing
-    }
-    """
-    by_class: dict[str, str] = {}
-    by_name:  dict[str, list] = {}
-    class_files: dict[str, str] = {}
 
-    java_files = list(Path(project_path).rglob("*.java"))
-    for jf in java_files:
-        try:
-            source = jf.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            continue
-
-        class_match = re.search(
-            r'\b(?:public\s+)?(?:class|interface|enum)\s+(\w+)', source
-        )
-        class_name = class_match.group(1) if class_match else jf.stem
-        class_files[class_name] = str(jf)
-
-        method_pattern = re.compile(
-            r'(?:public|protected|private|static|\s)+[\w<>\[\]]+\s+'
-            r'(\w+)\s*\([^)]*\)\s*(?:throws\s+[\w,\s]+)?\s*\{',
-            re.MULTILINE
-        )
-        for m in method_pattern.finditer(source):
-            method_name = m.group(1)
-            if method_name in ('if','for','while','switch','catch','try',
-                               'else','new','return','class','interface'):
-                continue
-
-            line_no = source[:m.start()].count('\n') + 1
-            node_type = _classify_java_method_type(method_name, source,
-                                                    m.start(), class_name)
-            node_id = f"{jf.name}:{line_no}:{node_type}:{method_name}"
-
-            # Unambiguous: ClassName.methodName
-            full_key = f"{class_name}.{method_name}"
-            by_class[full_key] = node_id
-
-            # Potentially ambiguous: methodName alone
-            if method_name not in by_name:
-                by_name[method_name] = []
-            by_name[method_name].append(node_id)
-
-    return {"by_class": by_class, "by_name": by_name, "class_files": class_files}
+def _read_file_methods(filepath: str, lines: list[str] | None = None) -> dict[str, str]:
+    if lines is not None:
+        return _extract_methods_from_lines(lines)
+    p = Path(filepath)
+    if not p.exists():
+        return {}
+    parsed = parse_file_once(p)
+    return parsed.get("methods", {})
 
 
 def _classify_java_method_type(method_name: str, source: str,
@@ -147,6 +101,155 @@ def _classify_java_method_type(method_name: str, source: str,
     if any(mn_lower.startswith(g) for g in GUARD_NAM): return 'sanitizer'
     if any(s in mn_lower for s in SINK_PAT): return 'sink'
     return 'normal'
+
+
+def parse_file_once(filepath: Path | str) -> dict[str, Any]:
+    """Single disk read. Returns everything downstream stages need."""
+    p = Path(filepath).resolve()
+    cached = get_cached_parse(p)
+    if cached is not None:
+        return cached
+
+    # Exactly ONE read_text call per file in the whole pipeline
+    source = p.read_text(encoding="utf-8", errors="replace")
+    lines = source.splitlines()
+
+    class_match = re.search(
+        r'\b(?:public\s+)?(?:class|interface|enum)\s+(\w+)', source
+    )
+    class_name = class_match.group(1) if class_match else p.stem
+
+    methods = _extract_methods_from_lines(lines)
+
+    annotations_by_line: dict[int, list[str]] = {}
+    GUARD_ANN_SET = {
+        "@Valid", "@Validated", "@NotNull", "@NotBlank",
+        "@Pattern", "@Size", "@Min", "@Max", "@Positive",
+        "@PreAuthorize", "@Secured", "@RolesAllowed",
+    }
+    for idx_l, line_str in enumerate(lines, 1):
+        found = [a for a in GUARD_ANN_SET if a in line_str]
+        if found:
+            annotations_by_line[idx_l] = found
+
+    parsed_nodes = parse_java_file(str(p), content=source)
+
+    method_pattern = re.compile(
+        r'(?:public|protected|private|static|\s)+[\w<>\[\]]+\s+'
+        r'(\w+)\s*\([^)]*\)\s*(?:throws\s+[\w,\s]+)?\s*\{',
+        re.MULTILINE,
+    )
+    symbols = []
+    for m in method_pattern.finditer(source):
+        m_name = m.group(1)
+        if m_name in ('if', 'for', 'while', 'switch', 'catch', 'try',
+                      'else', 'new', 'return', 'class', 'interface'):
+            continue
+
+        line_no = source[:m.start()].count('\n') + 1
+        node_type = _classify_java_method_type(m_name, source, m.start(), class_name)
+        node_id = f"{p.name}:{line_no}:{node_type}:{m_name}"
+        full_key = f"{class_name}.{m_name}"
+        symbols.append({
+            "full_key": full_key,
+            "method_name": m_name,
+            "node_id": node_id,
+            "line_no": line_no,
+            "node_type": node_type,
+        })
+
+    parsed_data = {
+        "filepath": str(p),
+        "filename": p.name,
+        "source": source,
+        "lines": lines,
+        "class_name": class_name,
+        "methods": methods,
+        "annotations_by_line": annotations_by_line,
+        "parsed_nodes": parsed_nodes,
+        "symbols": symbols,
+    }
+
+    store_parsed(p, parsed_data)
+    return parsed_data
+
+
+def build_parsed_file_map(java_files: list[Path | str], pool_type: str | None = None) -> dict[str, dict[str, Any]]:
+    """
+    Build parsed file map in parallel.
+    Uses ThreadPoolExecutor to eliminate multi-second Windows process-spawn/module-import overhead
+    while retaining top-level picklability for ProcessPoolExecutor (selectable via VULNGRAPH_POOL_TYPE=process).
+    """
+    parsed: dict[str, dict[str, Any]] = {}
+    if not java_files:
+        return parsed
+
+    mode = pool_type or os.environ.get("VULNGRAPH_POOL_TYPE", "thread").lower()
+    max_workers = min(len(java_files), os.cpu_count() or 4, 8)
+    if max_workers < 1:
+        max_workers = 1
+
+    if mode == "process":
+        try:
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(parse_file_once, f): f for f in java_files}
+                for future in as_completed(futures):
+                    filepath = futures[future]
+                    try:
+                        parsed[str(Path(filepath).resolve())] = future.result()
+                    except Exception as e:
+                        parsed[str(Path(filepath).resolve())] = parse_file_once(filepath)
+            return parsed
+        except Exception:
+            pass  # Fall through to ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(parse_file_once, f): f for f in java_files}
+        for future in as_completed(futures):
+            filepath = futures[future]
+            try:
+                parsed[str(Path(filepath).resolve())] = future.result()
+            except Exception as err:
+                parsed[str(Path(filepath).resolve())] = parse_file_once(filepath)
+    return parsed
+
+
+def build_symbol_table(project_path: str, parsed_files: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    """
+    Builds a scope-aware symbol table.
+    Returns {
+      "by_class": {"ClassName.methodName": node_id, ...},
+      "by_name":  {"methodName": [node_id, ...], ...},  # list — may be ambiguous
+      "class_files": {"ClassName": filepath, ...}        # for receiver typing
+    }
+    """
+    by_class: dict[str, str] = {}
+    by_name:  dict[str, list] = {}
+    class_files: dict[str, str] = {}
+
+    if parsed_files is None:
+        root = Path(project_path).resolve()
+        java_files = []
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+            for filename in filenames:
+                if filename.endswith(".java"):
+                    java_files.append((Path(dirpath) / filename).resolve())
+        parsed_files = build_parsed_file_map(java_files)
+
+    for fp_str, pdata in parsed_files.items():
+        class_name = pdata.get("class_name", "")
+        class_files[class_name] = fp_str
+        for sym in pdata.get("symbols", []):
+            full_key = sym["full_key"]
+            node_id = sym["node_id"]
+            method_name = sym["method_name"]
+            by_class[full_key] = node_id
+            if method_name not in by_name:
+                by_name[method_name] = []
+            by_name[method_name].append(node_id)
+
+    return {"by_class": by_class, "by_name": by_name, "class_files": class_files}
 
 
 from backend.services.graph_manifest import (
@@ -181,7 +284,10 @@ def build_java_graph(project_path: str,
         G = _build_java_graph_full(project_path, progress_callback=progress_callback)
         _graph_cache[project_path] = G
         manifest = update_manifest_after_scan(manifest, changed)
-        save_manifest(project_path, manifest, G)
+        try:
+            save_manifest(project_path, manifest, G)
+        except Exception:
+            pass
         return G
     
     # Incremental: rebuild only changed files, merge into cached graph
@@ -205,7 +311,10 @@ def build_java_graph(project_path: str,
     
     _graph_cache[project_path] = G
     manifest = update_manifest_after_scan(manifest, changed)
-    save_manifest(project_path, manifest, G)
+    try:
+        save_manifest(project_path, manifest, G)
+    except Exception:
+        pass
     
     return G
 
@@ -235,7 +344,7 @@ def _build_java_graph_full(project_path: str, progress_callback=None) -> nx.DiGr
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for filename in filenames:
             if filename.endswith(".java"):
-                java_files.append(str((Path(dirpath) / filename).resolve()))
+                java_files.append((Path(dirpath) / filename).resolve())
     _last_java_builder_timings["file_discovery"] = time.perf_counter() - t0
     _last_java_builder_timings["discovered_files_count"] = len(java_files)
 
@@ -246,9 +355,14 @@ def _build_java_graph_full(project_path: str, progress_callback=None) -> nx.DiGr
     if progress_callback:
         progress_callback(0, total_files, "")
     
-    # === PHASE 1: Build global symbol table ===
+    # === Single-pass file parsing (parallelized via ProcessPoolExecutor / ThreadPoolExecutor) ===
     t0 = time.perf_counter()
-    sym = build_symbol_table(project_path)
+    parsed_files = build_parsed_file_map(java_files)
+    parse_map_time = time.perf_counter() - t0
+
+    # === PHASE 1: Build global symbol table (in-memory, NO disk read) ===
+    t0 = time.perf_counter()
+    sym = build_symbol_table(project_path, parsed_files=parsed_files)
     _last_java_builder_timings["symbol_table"] = time.perf_counter() - t0
     by_class   = sym["by_class"]
     by_name    = sym["by_name"]
@@ -257,16 +371,13 @@ def _build_java_graph_full(project_path: str, progress_callback=None) -> nx.DiGr
     file_methods: dict[str, dict[str, str]] = {}
     parsed_by_file: dict[str, dict[str, list[dict[str, Any]]]] = {}
 
-    t0 = time.perf_counter()
-    for idx, filepath in enumerate(java_files):
-        try:
-            source_text = Path(filepath).read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            source_text = ""
-
-        parsed = parse_java_file(filepath)
+    t0_nodes = time.perf_counter()
+    for idx, (filepath, pdata) in enumerate(parsed_files.items()):
+        source_text = pdata["source"]
+        lines = pdata["lines"]
+        parsed = pdata["parsed_nodes"]
         parsed_by_file[filepath] = parsed
-        file_methods[filepath] = _read_file_methods(filepath)
+        file_methods[filepath] = pdata["methods"]
 
         for category, items in parsed.items():
             node_type = TYPE_MAP[category]
@@ -295,7 +406,6 @@ def _build_java_graph_full(project_path: str, progress_callback=None) -> nx.DiGr
                     attrs["taint_confirmed"] = False  # Static regex match in Java pipeline
 
                 if node_type in ("sanitizer", "guard"):
-                    lines = source_text.splitlines()
                     start_idx = max(0, line - 6)
                     before_text = "\n".join(lines[start_idx:line])
                     GUARD_ANNOTATIONS = {"@Valid","@Validated","@NotNull","@NotBlank",
@@ -311,7 +421,7 @@ def _build_java_graph_full(project_path: str, progress_callback=None) -> nx.DiGr
         if progress_callback:
             progress_callback(idx + 1, total_files, Path(filepath).name)
 
-    _last_java_builder_timings["file_parsing"] = time.perf_counter() - t0
+    _last_java_builder_timings["file_parsing"] = parse_map_time + (time.perf_counter() - t0_nodes)
 
     t0 = time.perf_counter()
     for filepath, methods in file_methods.items():
@@ -343,15 +453,10 @@ def _build_java_graph_full(project_path: str, progress_callback=None) -> nx.DiGr
                                 weight=1.0,
                             )
 
-    # === PHASE 3: Add cross-file edges ===
-    # For each node in the graph, scan its source file for 
-    # method calls and resolve them against the symbol table
-    
-    for jf in java_files:
-        try:
-            source = jf.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            continue
+    # === PHASE 3: Add cross-file edges (in-memory, NO disk read) ===
+    for filepath, pdata in parsed_files.items():
+        source = pdata["source"]
+        jf_name = pdata["filename"]
         
         # Find all method calls: patterns like  
         # variableName.methodName( or ClassName.methodName(
@@ -359,7 +464,7 @@ def _build_java_graph_full(project_path: str, progress_callback=None) -> nx.DiGr
         
         # Find which nodes belong to this file
         file_nodes = [n for n in g.nodes() 
-                      if g.nodes[n].get('file','').endswith(jf.name)]
+                      if g.nodes[n].get('file','').endswith(jf_name)]
         
         for match in call_pattern.finditer(source):
             obj_name = match.group(1)      # e.g. "userService"
@@ -423,28 +528,24 @@ def _build_java_graph_for_files(files: list[str],
                                  project_path: str) -> nx.DiGraph:
     g = nx.DiGraph()
     root = Path(project_path).resolve()
-    target_files = {str(Path(f).resolve()) for f in files}
+    target_files = [Path(f).resolve() for f in files if Path(f).exists()]
     if not target_files:
         return g
 
-    sym = build_symbol_table(project_path)
+    parsed_files = build_parsed_file_map(target_files)
+    sym = build_symbol_table(project_path, parsed_files=parsed_files)
     by_class   = sym["by_class"]
     by_name    = sym["by_name"]
 
     file_methods: dict[str, dict[str, str]] = {}
     parsed_by_file: dict[str, dict[str, list[dict[str, Any]]]] = {}
 
-    for filepath in target_files:
-        if not Path(filepath).exists():
-            continue
-        try:
-            source_text = Path(filepath).read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            source_text = ""
-
-        parsed = parse_java_file(filepath)
+    for filepath, pdata in parsed_files.items():
+        source_text = pdata["source"]
+        lines = pdata["lines"]
+        parsed = pdata["parsed_nodes"]
         parsed_by_file[filepath] = parsed
-        file_methods[filepath] = _read_file_methods(filepath)
+        file_methods[filepath] = pdata["methods"]
 
         for category, items in parsed.items():
             node_type = TYPE_MAP[category]
@@ -473,7 +574,6 @@ def _build_java_graph_for_files(files: list[str],
                     attrs["taint_confirmed"] = False
 
                 if node_type in ("sanitizer", "guard"):
-                    lines = source_text.splitlines()
                     start_idx = max(0, line - 6)
                     before_text = "\n".join(lines[start_idx:line])
                     GUARD_ANNOTATIONS = {"@Valid","@Validated","@NotNull","@NotBlank",
@@ -515,18 +615,13 @@ def _build_java_graph_for_files(files: list[str],
                                 weight=1.0,
                             )
 
-    for filepath in target_files:
-        jf = Path(filepath)
-        if not jf.exists():
-            continue
-        try:
-            source = jf.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            continue
+    for filepath, pdata in parsed_files.items():
+        source = pdata["source"]
+        jf_name = pdata["filename"]
 
         call_pattern = re.compile(r'(\w+)\.(\w+)\s*\(')
         file_nodes = [n for n in g.nodes() 
-                      if g.nodes[n].get('file','').endswith(jf.name)]
+                      if g.nodes[n].get('file','').endswith(jf_name)]
 
         for match in call_pattern.finditer(source):
             obj_name = match.group(1)

@@ -119,6 +119,11 @@ def scan(req: ScanRequest):
         "current_file": None,
     })
 
+    from backend.services.code_security_graph import invalidate_security_graph_cache
+    invalidate_security_graph_cache()
+    from backend.routers.tdra import _ANALYSIS_CACHE
+    _ANALYSIS_CACHE.clear()
+
     from backend.services.java_parser_bridge import reset_parser_stats
     reset_parser_stats()
 
@@ -217,7 +222,7 @@ def scan(req: ScanRequest):
         try:
             from backend.routers.tdra import _get_analyzed_commit_results
             tdra_results, _ = _get_analyzed_commit_results(
-                req.project_path, limit=20
+                str(p), limit=20
             )
         except Exception:
             tdra_results = get_mock_timeline()[:10]
@@ -277,6 +282,8 @@ def scan(req: ScanRequest):
             )
         ),
     }
+    if path_stats.get("warning"):
+        diagnostics["warning"] = path_stats["warning"]
 
     import json
     print("\n" + "=" * 60)
@@ -284,7 +291,7 @@ def scan(req: ScanRequest):
     print(json.dumps(diagnostics, indent=2))
     print("=" * 60 + "\n")
 
-    return {
+    response_payload = {
         "message": "Scan complete",
         "project_path": str(p),
         "language": language,
@@ -299,6 +306,10 @@ def scan(req: ScanRequest):
         "rag_indexed": True,
         "diagnostics": diagnostics,
     }
+    if path_stats.get("warning"):
+        response_payload["warning"] = path_stats["warning"]
+
+    return response_payload
 
 
 @router.get("/scan/status")
@@ -318,65 +329,91 @@ async def scan_upload(
     base = Path("/tmp/vulngraph_uploads") / safe_name
     base.mkdir(parents=True, exist_ok=True)
 
-    for f in files:
-        rel = (f.filename or "file.py").lstrip("/").replace("..", "_")
-        out = base / rel
-        out.parent.mkdir(parents=True, exist_ok=True)
-        content = await f.read()
-        out.write_bytes(content)
-
-    language = detect_project_language(str(base))
-    if language == "java":
-        built = analyze_java_codebase(str(base))
-    else:
-        from backend.services.code_security_graph import analyze_codebase
-        built = analyze_codebase(str(base))
-    g = built["graph"]
-    nodes = built["nodes"]
-    edges = built["edges"]
-    sources = built["sources"]
-    sinks = built["sinks"]
-
-    # Enrich with git history (or mock fallback)
-    repo_root = find_git_root(str(base))
-    node_list = [dict(data) for _, data in g.nodes(data=True)]
-    enriched = enrich_nodes_with_git(node_list, repo_root)
-    for enode in enriched:
-        nid = enode.get("id")
-        if nid and nid in g:
-            for k, v in enode.items():
-                g.nodes[nid][k] = v
-
-    attack_paths = compute_high_risk_paths(limit=10)
-    node_list_data = [dict(data, id=n) for n, data in g.nodes(data=True)]
-    
-    # Update global state so reports get the git-enriched nodes
-    import backend.services.code_security_graph as csg
-    csg._current_graph["nodes"] = node_list_data
-    csg._current_paths = attack_paths
-    csg._current_high_risk = attack_paths
-
     _scan_state.update({
+        "status": "scanning",
         "last_path": str(base),
-        "nodes": len(nodes),
-        "edges": len(edges),
-        "sources": len(sources),
-        "sinks": len(sinks),
-        "paths_found": len(attack_paths),
+        "scanned_files": 0,
+        "total_files": len(files),
+        "current_file": "Uploading files...",
     })
 
-    rag_result = index_graph_findings({"nodes": node_list_data}, attack_paths)
-    update_graph_summary({
-        "total_nodes": len(node_list_data),
-        "total_sources": len(sources),
-        "total_sinks": len(sinks),
-        "total_paths": len(attack_paths),
-        "scanned_project": base.name
-    })
+    try:
+        for f in files:
+            raw_rel = (f.filename or "file.py").lstrip("/").replace("..", "_")
+            parts = Path(raw_rel).parts
+            if len(parts) > 1 and (parts[0] == safe_name or parts[0] == folder_name):
+                rel = str(Path(*parts[1:]))
+            else:
+                rel = raw_rel
+            out = base / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+            content = await f.read()
+            out.write_bytes(content)
+
+        # Determine effective project root
+        target_dir = base
+        if (base / safe_name).is_dir() and any((base / safe_name).iterdir()):
+            target_dir = base / safe_name
+
+        language = detect_project_language(str(target_dir))
+        if language == "java":
+            built = analyze_java_codebase(str(target_dir), progress_callback=update_scan_progress)
+        else:
+            from backend.services.code_security_graph import analyze_codebase
+            built = analyze_codebase(str(target_dir), progress_callback=update_scan_progress)
+        g = built["graph"]
+        nodes = built["nodes"]
+        edges = built["edges"]
+        sources = built["sources"]
+        sinks = built["sinks"]
+
+        # Enrich with git history (or mock fallback)
+        repo_root = find_git_root(str(target_dir)) or find_git_root(str(base))
+        node_list = [dict(data) for _, data in g.nodes(data=True)]
+        enriched = enrich_nodes_with_git(node_list, repo_root)
+        for enode in enriched:
+            nid = enode.get("id")
+            if nid and nid in g:
+                for k, v in enode.items():
+                    g.nodes[nid][k] = v
+
+        attack_paths = compute_high_risk_paths(limit=10)
+        node_list_data = [dict(data, id=n) for n, data in g.nodes(data=True)]
+        
+        # Update global state so reports get the git-enriched nodes
+        import backend.services.code_security_graph as csg
+        csg._current_graph["nodes"] = node_list_data
+        csg._current_paths = attack_paths
+        csg._current_high_risk = attack_paths
+
+        _scan_state.update({
+            "status": "complete",
+            "last_path": str(target_dir),
+            "scanned_files": _scan_state.get("total_files", len(files)),
+            "current_file": "Scan complete",
+            "nodes": len(nodes),
+            "edges": len(edges),
+            "sources": len(sources),
+            "sinks": len(sinks),
+            "paths_found": len(attack_paths),
+        })
+
+        rag_result = index_graph_findings({"nodes": node_list_data}, attack_paths)
+        update_graph_summary({
+            "total_nodes": len(node_list_data),
+            "total_sources": len(sources),
+            "total_sinks": len(sinks),
+            "total_paths": len(attack_paths),
+            "scanned_project": base.name
+        })
+    except Exception as e:
+        _scan_state["status"] = "error"
+        _scan_state["error"] = str(e)
+        raise
 
     return {
-        "message": f"Uploaded and scanned: {base}",
-        "project_path": str(base),
+        "message": f"Uploaded and scanned: {target_dir}",
+        "project_path": str(target_dir),
         "git_root": repo_root,
         "language": language,
         "nodes": len(nodes),

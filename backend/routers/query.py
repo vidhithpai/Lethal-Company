@@ -25,6 +25,7 @@ except Exception:
 
 _graph_summary: dict = {}
 _cache: dict = {}
+ai_query_cache: dict = {}
 
 def update_graph_summary(summary: dict):
     global _graph_summary
@@ -91,7 +92,12 @@ def ask_query(req: QueryRequest):
         llm_text = _rule_based_answer(query, retrieved, intents)
 
     # 6. Build structured response
-    return build_structured_response(llm_text, retrieved, query, intents)
+    structured = build_structured_response(llm_text, retrieved, query, intents)
+    ai_query_cache[query] = {
+        "explanation": structured.get("explanation", llm_text),
+        "structured": structured,
+    }
+    return structured
 
 
 def _rule_based_answer(query: str, docs: list[dict], intents: list[str]) -> str:

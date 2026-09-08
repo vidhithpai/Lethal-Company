@@ -54,98 +54,44 @@ def _resolve_candidate_paths(raw_path: str) -> list[Path]:
 def find_git_root(path: str | None) -> str | None:
     """
     Find .git repository root for the given path.
-    Searches candidate paths, parent directories, GitPython auto-discovery,
-    and host/workspace folders.
+    ONLY inspects the active project directory and its immediate subdirectories
+    (for uploaded/unzipped archives).
+    NEVER walks up into parent directories outside the active project.
+    NEVER falls back to CWD, /app, or the VulnGraph application repository.
     """
-    if not path:
-        path = str(Path.cwd())
+    if not path or path == "." or path == "/app":
+        return None
 
-    print(f"[GIT_CHECK] Finding git root for repo_path: '{path}'")
+    norm_path = path.strip().replace("\\", "/")
+    print(f"[GIT_CHECK] Finding git root for active project: '{norm_path}'")
+
     candidates = _resolve_candidate_paths(path)
-
-    # Check each candidate
     for p in candidates:
         if not p.exists():
             continue
 
         target_dir = p if p.is_dir() else p.parent
 
-        # 1. Direct .git check
+        # 1. Direct .git check in the project root
         if (target_dir / ".git").exists():
             print(f"[GIT_CHECK] Found direct git repo at '{target_dir}'")
             return str(target_dir)
 
-        # 2. Try GitPython search_parent_directories
+        # 2. Check immediate subdirectories (e.g. unzipped wrapper folder project_name/project_name/.git)
         try:
-            import git
-            repo = git.Repo(str(target_dir), search_parent_directories=True)
-            if repo.working_dir:
-                print(f"[GIT_CHECK] GitPython discovered git repo at '{repo.working_dir}'")
-                return str(repo.working_dir)
+            for sub in target_dir.iterdir():
+                if sub.is_dir() and (sub / ".git").exists():
+                    print(f"[GIT_CHECK] Found git repo in subdirectory '{sub}'")
+                    return str(sub)
+                if sub.is_dir():
+                    for subsub in sub.iterdir():
+                        if subsub.is_dir() and (subsub / ".git").exists():
+                            print(f"[GIT_CHECK] Found git repo in nested subdirectory '{subsub}'")
+                            return str(subsub)
         except Exception:
             pass
 
-        # 3. Manual parent walk
-        for parent in list(target_dir.parents):
-            if (parent / ".git").exists():
-                print(f"[GIT_CHECK] Found parent git repo at '{parent}'")
-                return str(parent)
-
-    # 4. If path was an uploaded project folder (e.g. /tmp/vulngraph_uploads/<name>)
-    # or a subfolder name, search candidate project folders
-    norm_parts = [part for part in Path(path).parts if part and part not in ("/", "\\", "tmp", "vulngraph_uploads", "app")]
-    folder_names = list(dict.fromkeys(norm_parts[::-1]))
-
-    curr = Path.cwd().resolve()
-    user_home = Path.home()
-
-    search_roots = [
-        curr,
-        curr.parent,
-        Path("/host/c"),
-        Path("/mnt/c"),
-        user_home,
-        user_home / "Documents",
-        user_home / "Downloads",
-        user_home / "Projects",
-    ]
-
-    for fname in folder_names:
-        if not fname or any(fname.endswith(ext) for ext in (".py", ".java", ".js", ".ts", ".html")):
-            continue
-
-        for sroot in search_roots:
-            if not sroot.exists():
-                continue
-            cand = sroot / fname
-            if cand.exists():
-                if (cand / ".git").exists():
-                    print(f"[GIT_CHECK] Found project match with git repo at '{cand}'")
-                    return str(cand)
-                try:
-                    import git
-                    repo = git.Repo(str(cand), search_parent_directories=True)
-                    if repo.working_dir:
-                        print(f"[GIT_CHECK] Found project match git repo at '{repo.working_dir}'")
-                        return str(repo.working_dir)
-                except Exception:
-                    pass
-
-    # 5. Final fallback to CWD's git root if it exists
-    try:
-        import git
-        repo = git.Repo(str(curr), search_parent_directories=True)
-        if repo.working_dir:
-            print(f"[GIT_CHECK] Fallback to CWD git repo at '{repo.working_dir}'")
-            return str(repo.working_dir)
-    except Exception:
-        pass
-
-    if (curr / ".git").exists():
-        print(f"[GIT_CHECK] Fallback to CWD direct .git at '{curr}'")
-        return str(curr)
-
-    print(f"[GIT_CHECK] No .git folder found for '{path}'")
+    print(f"[GIT_CHECK] No .git folder found for active project '{path}'")
     return None
 
 
@@ -194,9 +140,20 @@ def git_blame_line(repo_root: str, filepath: str, line_number: int) -> dict:
         if not lines:
             return {}
         commit_hash = lines[0].split()[0]
-        # All-zeros means the file is uncommitted
+        # If uncommitted in worktree (e.g. CRLF/LF diffs across host/container), try blaming HEAD
+        if commit_hash == "0" * 40:
+            res_head = subprocess.run(
+                ["git", "-C", str(rr), "blame", "HEAD", "-L",
+                 f"{line_number},{line_number}", "--porcelain", rel_path],
+                capture_output=True, text=True, timeout=5
+            )
+            if res_head.returncode == 0 and res_head.stdout.strip():
+                lines = res_head.stdout.splitlines()
+                commit_hash = lines[0].split()[0]
+
         if commit_hash == "0" * 40:
             return {"commit": "uncommitted", "author": "local", "date": "unknown", "message": "Not yet committed"}
+
         info = {"commit": commit_hash[:8]}
         for line in lines[1:]:
             if line.startswith("author "):
