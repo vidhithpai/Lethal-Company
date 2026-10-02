@@ -1,753 +1,423 @@
-# VulnGraph 🔍
+# VulnGraph — Temporal Differential Reachability Analysis (TDRA)
 
-> **AI-powered code security analysis that finds attack paths before attackers do.**
+> **Commit-level security regression detection for Java and Python codebases.**  
+> TDRA answers the question no existing SAST tool can: *which specific commit made the system more exploitable, and by exactly how much?*
 
-VulnGraph scans Python codebases, builds an interactive 3D graph of how dangerous data flows through your code, and uses **Groq's Llama-3** (with an Offline ML-LLM Assistant Fallback) to explain vulnerabilities in plain English and generate executive reports.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)]()
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11+-green.svg)]()
+[![Node.js 18+](https://img.shields.io/badge/Node.js-18+-green.svg)]()
+[![VS Code Extension](https://img.shields.io/badge/VS%20Code-Extension-blue.svg)]()
 
 ---
 
 ## Table of Contents
 
-- [What Is VulnGraph?](#what-is-vulngraph)
-- [How It Works — Plain English](#how-it-works--plain-english)
-- [Live Demo Flow](#live-demo-flow)
-- [Tech Stack](#tech-stack)
-- [Project Structure](#project-structure)
-- [Getting Started](#getting-started)
-  - [Prerequisites](#prerequisites)
-  - [Installation](#installation)
-  - [Running the App](#running-the-app)
-- [Using the App](#using-the-app)
-- [API Reference](#api-reference)
-- [Key Concepts Explained](#key-concepts-explained)
-- [Configuration](#configuration)
-- [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
+1. [What is VulnGraph?](#what-is-vulngraph)
+2. [How it differs from existing tools](#how-it-differs-from-existing-tools)
+3. [System Architecture](#system-architecture)
+4. [Repository Structure](#repository-structure)
+5. [Core Concepts](#core-concepts)
+6. [Quick Start](#quick-start)
+7. [VS Code Extension](#vs-code-extension)
+8. [API Reference](#api-reference)
+9. [Research Background](#research-background)
 
 ---
 
-## What Is VulnGraph?
+## What is VulnGraph?
 
-VulnGraph is a **security analysis tool** that reads Python source code and answers the question:
+VulnGraph is a **commit-level security regression detector**. It is not just a snapshot vulnerability scanner. It doesn't only tell you what is vulnerable in your codebase right now — it tells you which specific commit changed your security posture, how much the attack surface expanded, and exactly which new execution paths from user-controlled input to sensitive operations were introduced.
 
-> *"If an attacker sends malicious input to my app, how far can it travel, and what damage can it do?"*
+**The tool answers one key question per commit:**
+> *"Does this change create a new path from user input → sensitive operation that didn't exist before? And did it weaken the guards protecting existing paths?"*
 
-It does this by:
-1. **Reading your code** like a security expert would
-2. **Drawing a map** (the graph) of where dangerous data can flow
-3. **Highlighting the riskiest routes** (attack paths) from input → danger
-4. **Letting you ask questions** in plain English ("show me SQL injection paths")
-5. **Showing who introduced** each vulnerability and when (via git blame)
-
-**You do not need to be a security expert to use it.** The AI and the Offline ML-LLM Fallback Assistant explain everything.
+This is quantified as a **Risk Factor (RF ∈ [0,1])** per commit, computed using a deterministic, mathematically grounded formula validated against CVE-linked benchmark repositories.
 
 ---
 
-## ✨ The 5 Wow Factors
+## How it differs from existing tools
 
-1. **"We don't just find vulnerabilities — we time-travel to when they were introduced"**
-Show a sink node, click it, and the side panel shows: *"This SQL injection was introduced by [Author] on [Date] in commit abc1234, message: 'added search feature'."* No existing tool — OWASP, Snyk, SonarQube — does this in a visual, interactive way.
+| Capability | SonarQube | CodeQL | Semgrep | CodeRabbit | VulnGraph TDRA |
+|---|---|---|---|---|---|
+| **Unit of analysis** | Codebase snapshot | Codebase snapshot | File/pattern | PR diff (text) | **Commit transition** |
+| **Version-aware comparison** | ✗ | ✗ | ✗ | Partial | **✓ Core contribution** |
+| **Guard weakening detection** | ✗ | ✗ | ✗ | ✗ | **✓ Novel** |
+| **Commit-level RF score** | ✗ | ✗ | ✗ | ✗ | **✓ Deterministic** |
+| **Cross-file Spring MVC paths** | ✗ | ✓ (requires QL) | ✗ | ✗ | **✓ Automatic** |
+| **CWE-typed attenuation model** | ✗ | Partial | ✗ | ✗ | **✓ Product formula** |
+| **Deterministic output** | ✓ | ✓ | ✓ | ✗ (LLM) | **✓** |
+| **Local-only / no data upload** | Paid | GitHub hosted | Cloud option | Cloud | **✓ Always local** |
 
-2. **"Ask it anything in plain English — it understands security intent"**
-Type *"where does user input reach SQL execution?"* — the graph animates the exact tainted path. This isn't keyword search. The Llama-3 AI understands the security intent and maps it to a live graph traversal. Judges from industry have never seen a conversational interface on top of a taint graph.
-
-3. **"Zero Downtime: The Offline ML-LLM Assistant Fallback"**
-During hackathons, APIs fail, networks drop, and quotas are exceeded. VulnGraph features an offline ML-LLM Fallback model that seamlessly intercepts failed API calls, ensuring the RAG engine and live 3D graph simulations continue to function flawlessly under all conditions.
-
-4. **"Patch a node and watch your attack surface shrink in real time"**
-Click the vulnerable `cursor.execute` node → mark as patched → the attack path disappears instantly. The graph recomputes live. This demonstrates the business value: *"which single fix eliminates the most risk?"*
-
-4. **"We show blast radius — not just what's vulnerable, but what else was broken by the same change"**
-When you introduced the SQL injection, you also touched 4 other files in the same commit. VulnGraph surfaces this: *"Blast radius: 4 files."* This is the difference between a vulnerability scanner and a security intelligence tool.
-
-5. **"This is a codebase's immune system — it grows with your project"**
-Every new scan re-analyzes the AST. Every commit is tracked. Every patch is simulated. VulnGraph isn't a one-time report — it's a living graph that reflects your security posture in real time. OWASP gives you a PDF. VulnGraph gives you a war room.
+**One-sentence differentiation:**  
+*Dependency scanners cover what you imported. SAST tools cover what is wrong now. VulnGraph covers what your last commit broke structurally.*
 
 ---
 
-## How It Works — Plain English
-
-Imagine your web application is a building. Users enter through the **front door** (HTTP requests). Inside the building there are **dangerous rooms** — places where, if a bad actor gets in, they can steal data (SQL injection), run commands on your server (command injection), or read files they shouldn't (path traversal).
-
-VulnGraph:
-
-1. **Finds all the doors** — every place your code reads user input (`request.args`, `request.form`, form fields, etc.). These are called **Sources** 🟢.
-
-2. **Finds all the dangerous rooms** — every place your code does something risky with data (runs a database query, executes a shell command, writes a file, calls `eval()`). These are called **Sinks** 🔴.
-
-3. **Traces every corridor** between doors and rooms — follows the data as it moves through variables, function calls, and assignments. These intermediate steps are shown as **yellow nodes**.
-
-4. **Checks for security guards** — sanitizer functions like `sanitize_input()`, `escape()`, `validate()` that clean data before it reaches danger. These are **purple nodes** 🟣.
-
-5. **Scores the risk** — a path from a source to a sink with no sanitizer is **HIGH** risk. One that passes through a sanitizer is lower risk.
-
-6. **Asks the AI Engine** (Groq Llama-3 or the Offline Fallback Assistant) to explain what it found, generate a report, and suggest fixes.
-
----
-
-## Live Demo Flow
-
-The project includes an intentionally vulnerable demo app at `demo_project/`:
+## System Architecture
 
 ```
-demo_project/
-├── app.py      ← Flask app with 4 vulnerabilities built in
-├── db.py       ← SQL injection (vulnerable) + parameterized (safe) side by side
-└── utils.py    ← Path traversal + sanitizer functions
+┌─────────────────────────────────────────────────────────────────┐
+│                     CLIENT LAYER                                 │
+│                                                                  │
+│  ┌───────────────────┐  ┌──────────────────┐  ┌─────────────┐  │
+│  │  Web UI           │  │  VS Code         │  │  Docker     │  │
+│  │  React + Three.js │  │  Extension       │  │  Compose    │  │
+│  │  3D force graph   │  │  Node.js v0.2.0  │  │  (optional) │  │
+│  └────────┬──────────┘  └────────┬─────────┘  └──────┬──────┘  │
+└───────────┼──────────────────────┼──────────────────── ┼────────┘
+            │                      │                      │
+            └──────────────────────┼──────────────────────┘
+                                   │ localhost only
+                                   ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                 API GATEWAY — FastAPI (port 8001 / 8002)         │
+│                                                                  │
+│   /api/cve/scan    /api/graph    /api/tdra/*    /api/report/html │
+│   /api/query/ask   /api/git/*    /api/tdra/validate              │
+└─────────────────────────────────────────────────────────────────┘
+                                   │
+            ┌──────────────────────┼──────────────────────┐
+            ▼                      ▼                       ▼
+┌───────────────────┐  ┌───────────────────┐  ┌──────────────────┐
+│  ANALYSIS ENGINE  │  │  TDRA DIFFERENTIAL│  │  AI / RAG        │
+│                   │  │  ENGINE           │  │                  │
+│  • Python AST     │  │  • git diff scope │  │  • Groq Llama-3  │
+│  • Java bridge    │  │  • G(V_prev/curr) │  │  • Local Fallback│
+│  • Symbol table   │  │  • RF formula     │  │  • Context RAG   │
+│  • Cross-file     │  │  • Attenuation    │  │  • Rule fallback │
+│  • NetworkX graph │  │  • Mann-Whitney U │  │                  │
+└───────────────────┘  └───────────────────┘  └──────────────────┘
+            │                      │
+            └──────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     DATA LAYER (in-memory)                       │
+│                                                                  │
+│    NetworkX DiGraph    RAG index    TDRA result cache (5 min TTL)│
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**What VulnGraph will find in the demo:**
+### TDRA Pipeline (5 stages)
 
-| Vulnerability | File | Severity |
-|--------------|------|----------|
-| SQL Injection | `db.py:8` — `cursor.execute(f"...{query}")` | 🔴 HIGH |
-| Command Injection | `app.py:18` — `subprocess.run(cmd, shell=True)` | 🔴 HIGH |
-| Code Injection | `app.py:25` — `eval(expr)` | 🔴 CRITICAL |
-| Path Traversal | `utils.py:8` — `open(filename)` | 🟠 MEDIUM |
-| Safe path | `db.py:17` — `cursor.execute(q, (param,))` | ✅ LOW (parameterized) |
+```
+Git repo
+   │
+   ▼
+Stage 1 ─── PyDriller commit iteration
+             Extract (V_prev, V_curr) pairs
+             git diff --name-only → changed files only
+   │
+   ▼
+Stage 2 ─── Program graph construction (per version)
+             Java: JavaParser + global symbol table → cross-file edges
+             Python: ast.NodeVisitor → _TaintVisitor
+             Nodes: ENTRY · SINK · GUARD · NORMAL
+             NetworkX DiGraph G = (N, E)
+   │
+   ▼
+Stage 3 ─── Constrained reachability analysis
+             all_simple_paths(G, ENTRY, SINK, cutoff=15)
+             Per path: residual_risk = ∏(1 - Aᵢ) for all GUARD nodes
+             Aᵢ = attenuation score from CWE-typed table
+   │
+   ▼
+Stage 4 ─── Differential analysis
+             ΔPaths = R(V_curr) \ R(V_prev)       ← new attack paths
+             ΔGuard = Σ[S_prev(p) - S_curr(p)]⁺  ← guard weakening
+             RF = 0.6·(ΔPaths/|P_before|) + 0.4·(ΔGuard/A_total)
+             RF ∈ [0,1], clamped
+   │
+   ▼
+Stage 5 ─── Statistical validation + reporting
+             Mann-Whitney U (VCC vs non-VCC RF scores)
+             Cliff's delta (effect size)
+             JSON + HTML report with TDRA section
+```
 
 ---
 
-## Tech Stack
-
-| Layer | Technology | Why |
-|-------|-----------|-----|
-| **Frontend** | React 18 + Vite | Fast dev server, hot reload |
-| **3D Graph** | `react-force-graph-3d` + Three.js | Interactive force-directed 3D visualization |
-| **Node labels** | `three-spritetext` | Floating text in 3D space |
-| **State** | Zustand | Lightweight, no boilerplate |
-| **Backend** | FastAPI (Python) | Fast async API, auto-generates docs |
-| **AST Analysis** | Python `ast` module | Reads code structure without running it |
-| **Graph Engine** | NetworkX | Shortest path, taint propagation |
-| **AI Cloud** | Groq Llama-3.3 70B | Blazing fast natural language security explanations |
-| **AI Fallback** | Offline ML-LLM Assistant | Zero-downtime resilient RAG fallback engine |
-| **Git Analysis** | `git blame` via subprocess | Commit attribution |
-
----
-
-## Project Structure
+## Repository Structure
 
 ```
-Lethal-Company/               ← monorepo root
+TDRA/                              ← project root
 │
-├── frontend/                 ← React frontend application
+├── backend/
+│   ├── main.py                    ← FastAPI app, router registrations
+│   ├── requirements.txt           ← Python deps (javalang, scipy, gitpython...)
+│   │
+│   ├── routers/
+│   │   ├── scan.py                ← POST /api/cve/scan (triggers analysis)
+│   │   ├── security.py            ← GET /api/graph, /api/attack-paths
+│   │   ├── tdra.py                ← GET /api/tdra/timeline, /analyze, /validate
+│   │   ├── git_router.py          ← GET /api/git/blame, /timeline
+│   │   ├── query.py               ← POST /api/query/ask (AI + RAG)
+│   │   ├── report.py              ← GET /api/report/html
+│   │   └── graph.py               ← GET /api/graph path endpoints
+│   │
+│   └── services/
+│       ├── code_security_graph.py ← ⭐ Python AST engine + NetworkX graph
+│       ├── java_parser_bridge.py  ← Java source parser (regex + javalang)
+│       ├── java_graph_builder.py  ← Java graph + symbol table + cross-file edges
+│       ├── differential_engine.py ← ⭐ TDRA core: git diff, V_prev/curr, RF
+│       ├── guard_attenuation.py   ← ⭐ Product attenuation model, CWE table
+│       ├── cdg_guard_detector.py  ← CDG guard detector
+│       ├── reaching_def.py        ← Reaching definitions analysis
+│       ├── depth_budget.py        ← Search depth budget manager
+│       ├── graph_manifest.py      ← Graph persistence & serialization
+│       ├── statistical_validator.py ← Mann-Whitney U, Cliff's delta
+│       ├── mock_tdra_data.py      ← Demo fallback when no .git repo
+│       ├── git_history.py         ← git blame, blast radius, commit attribution
+│       ├── rag_engine.py          ← In-memory RAG for AI queries
+│       ├── tdra_context_builder.py← TDRA prompt context builder
+│       └── tdra_rag_documents.py  ← TDRA RAG document indexing
+│
+├── frontend/
 │   ├── src/
-│   │   ├── components/
-│   │   │   ├── canvas/       ← 3D force graph renderer (GraphCanvas.jsx)
-│   │   │   ├── metrics/      ← Security metrics bar (MetricsBar.jsx)
-│   │   │   └── panel/        ← Unified side panel (UnifiedPanel.jsx)
-│   │   ├── services/         ← API endpoint configuration (api.js)
-│   │   ├── store/            ← Zustand global state (useStore.js)
-│   │   ├── styles/           ← Global dark theme CSS (styles.css)
-│   │   ├── App.jsx           ← Main App layout
-│   │   └── main.jsx          ← React entry point
-│   ├── public/
-│   ├── index.html
-│   ├── package.json
-│   ├── package-lock.json
-│   ├── vite.config.js
-│   └── .env
+│   │   ├── App.jsx                ← Root component, repo path input
+│   │   ├── config.js              ← Environment API base configuration
+│   │   ├── services/api.js        ← All endpoint URLs
+│   │   ├── store/useStore.js      ← Zustand state (graph, diffMode, timeline)
+│   │   │
+│   │   └── components/
+│   │       ├── canvas/
+│   │       │   ├── GraphCanvas.jsx← ⭐ 3D Three.js force graph + diff mode
+│   │       │   ├── SchematicView.jsx ← 2D Schematic Architecture diagram
+│   │       │   └── ViewToggle.jsx  ← Toggle 3D Force Graph / 2D Schematic View
+│   │       ├── panel/
+│   │       │   ├── CommitTimeline.jsx ← RF bars, severity bands, diff trigger
+│   │       │   ├── ExplorerPanel.jsx  ← Node & file tree explorer
+│   │       │   └── UnifiedPanel.jsx   ← Node details + AI chat
+│   │       └── metrics/
+│   │           └── MetricsBar.jsx    ← Top stats bar + scan controls
+│   │
+│   └── package.json
 │
-├── backend/                  ← FastAPI backend application
-│   ├── main.py               ← FastAPI app entry point — wires all routers together
-│   ├── requirements.txt      ← Python dependencies
-│   ├── .env                  ← GEMINI_API_KEY / GROQ_API_KEY configuration
-│   ├── data/                 ← Default graph data topology (seed_graph.json)
-│   ├── services/
-│   │   ├── code_security_graph.py  ← AST scanner + taint engine + graph builder
-│   │   ├── git_history.py          ← git blame, commit attribution, blast radius
-│   │   ├── java_graph_builder.py   ← Java AST graph builder
-│   │   └── rag_engine.py           ← RAG retrieval engine
-│   └── routers/
-│       ├── security.py      ← /api/graph, /api/attack-paths, /api/high-risk-paths
-│       ├── scan.py          ← /api/cve/scan (triggers AST analysis)
-│       ├── query.py         ← /api/query/ask (Groq AI integration & Offline Fallback)
-│       ├── report.py        ← /api/report/html (AI-Generated Executive NL Reports)
-│       ├── git_router.py    ← /api/git/blame, /api/git/timeline
-│       └── graph.py        ← /api/graph path endpoints
+├── vscode-extension/
+│   ├── extension.js               ← ⭐ Extension engine: decorations, webview,
+│   │                                   pre-commit check, report export
+│   ├── package.json               ← Commands, settings, activation events
+│   ├── vulngraph-0.2.0.vsix       ← Packaged VSIX extension (install directly)
+│   └── README.md                  ← Extension-specific docs
 │
-├── docker/                   ← Self-contained Docker configurations
-│   ├── Dockerfile.backend
-│   ├── Dockerfile.frontend
-│   └── nginx.conf
-│
-├── tools/                    ← Utility and standalone analysis scripts
+├── tools/                         ← Standalone analysis scripts
 │   ├── vuln_analyzer.py
-│   ├── debug_mapping.py
-│   └── README.md
+│   └── debug_mapping.py
 │
-├── docs/                     ← Documentation and architecture specs
+├── docs/                          ← Architecture & project audit documentation
 │   ├── architecture.md
 │   └── PROJECT_AUDIT.md
 │
-├── demo_project/             ← Intentionally vulnerable Flask app for demo scanning
-├── sample_project/           ← Vulnerable Java/Polyglot sample app
-├── docker-compose.yml        ← Monorepo orchestration
+├── sample_project/                ← Vulnerable Java/Polyglot sample app
+├── demo_project/                  ← Vulnerable Python Flask demo app
+├── scripts/                       ← Utility scripts
+│   └── start_extension_backend.sh ← Start backend on port 8002 for IDE extension
+├── docker-compose.yml             ← Monorepo Docker orchestration
+├── requirements.txt               ← Root-level Python dependencies
 └── README.md
 ```
 
-### The Two Most Important Files
+---
 
-**`backend/services/code_security_graph.py`** — This is where all the magic happens:
-- Walks every `.py` file in the scanned folder
-- Parses each file into an AST (Abstract Syntax Tree — a structured representation of code)
-- Identifies sources, sinks, and sanitizers using pattern matching
-- Runs taint propagation: tracks whether "tainted" (user-controlled) data reaches a sink
-- Builds a `networkx.DiGraph` where nodes = code elements, edges = data flow
-- Computes risk scores and HIGH/MEDIUM/LOW classifications
+## Core Concepts
 
-**`frontend/src/components/canvas/GraphCanvas.jsx`** — The 3D visualization:
-- Renders the graph using Three.js force simulation
-- Green spheres = sources, Red = sinks, Yellow = tainted intermediates, Purple = sanitizers
-- Attack paths glow red with animated particles when highlighted
-- Click any node to see details in the side panel
+### Node Taxonomy
+
+Every method in the analyzed codebase is classified into one of four types:
+
+| Type | Color | Examples | Security role |
+|---|---|---|---|
+| `ENTRY` | 🟢 Green | `@RequestMapping`, `@PostMapping`, `main()`, `readLine()` | Source of untrusted input. Every attack path starts here. |
+| `SINK` | 🔴 Red | `stmt.execute()`, `Runtime.exec()`, `Files.write()`, `eval()` | Dangerous operation. Attack path ends here. |
+| `GUARD` | 🟣 Purple | `@Valid`, `@NotNull`, `validate*()`, `sanitize*()` | Validation barrier. Reduces taint reaching SINK. |
+| `NORMAL` | ⚪ Gray | All other methods | Intermediate nodes in path traversal. |
+
+### Guard Attenuation Model
+
+Guards are not binary (present/absent). Each guard node has an **attenuation score Aᵢ ∈ [0,1]** based on:
+- **Annotation / Function type**: `@Valid` on a SQL sink → A = 0.90. `checkInput()` name match → A = 0.35.
+- **CWE sink category**: Same annotation, different strength depending on whether sink is SQL (CWE-89), command injection (CWE-78), path traversal (CWE-22), or XSS (CWE-79).
+
+**Residual risk of a path:**
+$$R(p) = \prod_{i} (1 - A_i) \quad \text{for all GUARD nodes on path } p$$
+
+- $R(p) = 1.0 \rightarrow$ fully unguarded (maximum risk)
+- $R(p) \rightarrow 0 \rightarrow$ fully attenuated (taint blocked)
+
+### Risk Factor Formula
+
+$$RF(c) = \alpha \cdot \frac{\Delta\text{Paths}}{\max(|P_{\text{before}}|, 1)} + \beta \cdot \frac{\Delta A_{\text{total}}}{\max(A_{\text{prev\_total}}, 0.01)}$$
+
+where:
+- $\alpha = 0.6$ (path expansion weight)
+- $\beta = 0.4$ (guard regression weight)
+- $\Delta\text{Paths} = |R(V_{\text{curr}}) \setminus R(V_{\text{prev}})|$ (new attack paths)
+- $\Delta A_{\text{total}} = \sum [S_{\text{prev}}(p) - S_{\text{curr}}(p)]^+$ (guard strength lost)
+- $RF \in [0, 1]$ after clamping
+
+**Severity bands:**
+
+| RF range | Severity | CI/CD action |
+|---|---|---|
+| 0.00 – 0.20 | Low | Pass |
+| 0.21 – 0.45 | Medium | Flag for review |
+| 0.46 – 0.70 | High | Block — require approval |
+| 0.71 – 1.00 | Critical | Reject — redesign required |
 
 ---
 
-## Getting Started
+## Quick Start
 
 ### Prerequisites
 
-You need these installed on your machine:
+- Python 3.11+
+- Node.js 18+
+- Git
 
-| Tool | Check if installed | Install |
-|------|-------------------|---------|
-| **Python 3.11+** | `python3 --version` | https://python.org |
-| **Node.js 18+** | `node --version` | https://nodejs.org |
-| **uv** (Python pkg manager) | `uv --version` | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| **git** | `git --version` | pre-installed on most systems |
+### 1. Install Python dependencies
 
-> **Why `uv` instead of `pip`?** On modern Ubuntu systems `pip` is often not on the PATH. `uv` is faster and always works. You can also use `python3 -m pip` if you prefer.
-
----
-
-### Installation
-
-**Step 1 — Clone and enter the project**
-```bash
-git clone <repo-url>
-cd Lethal-Company
-```
-
-**Step 2 — Install Python dependencies**
 ```bash
 # Option A: using uv (recommended)
 uv pip install -r requirements.txt
 
 # Option B: using python3 -m pip
 python3 -m pip install -r requirements.txt
-
-# Option C: activate the existing venv first
-source .venv/bin/activate
-pip install -r requirements.txt
 ```
 
-**Step 3 — Install Node dependencies**
+### 2. Install Node dependencies
+
 ```bash
 npm install
 ```
 
-**Step 4 — Set your Groq API key**
+### 3. Set API key (optional — falls back to offline LLM assistant or rule-based)
 
-The `.env` file already exists with a key template. Edit it to use your own:
 ```bash
-# .env
-GROQ_API_KEY=your_groq_key_here
-```
-Get a free key at: https://console.groq.com
-
----
-
-## 🐳 Running with Docker (Recommended for sharing / other machines)
-
-This is the **one-command** path. Docker handles Python, Node, nginx, and all dependencies automatically.
-
-### Prerequisites
-
-| Tool | Check | Install |
-|------|-------|---------|
-| **Docker** | `docker --version` | https://docs.docker.com/get-docker/ |
-| **Docker Compose** | `docker compose version` | bundled with Docker Desktop |
-
-### Steps
-
-**Step 1 — Set your API key**
-```bash
-# Copy the example file
 cp .env.example .env
-
-# Edit .env and paste your Gemini key
-# GEMINI_API_KEY=your_key_here
+# Edit .env: GROQ_API_KEY=your_key_here
 ```
 
-**Step 2 — Build and start everything**
+### 4. Run the web application
+
+Run backend and frontend simultaneously:
+
+**Terminal 1 — Backend API**
 ```bash
-docker compose up --build
+python3 -m uvicorn backend.main:app --host 127.0.0.1 --port 8001 --reload
 ```
 
-That's it. First run takes ~2–3 minutes (downloads base images, builds layers). Subsequent runs are fast thanks to Docker layer caching.
-
-**Step 3 — Open the app**
-```
-http://localhost:5173
-```
-
-### What Docker starts
-
-| Container | What it runs | Port |
-|-----------|-------------|------|
-| `vulngraph-backend` | FastAPI + uvicorn | 8001 |
-| `vulngraph-frontend` | nginx serving built React app | 5173 |
-
-### Useful Docker commands
-
+**Terminal 2 — React Frontend**
 ```bash
-# Start in background (detached mode)
-docker compose up --build -d
-
-# See live logs
-docker compose logs -f
-
-# See logs for one service
-docker compose logs -f backend
-
-# Stop everything
-docker compose down
-
-# Stop and delete all data (full reset)
-docker compose down -v
-
-# Rebuild just one service after code changes
-docker compose up --build backend
-docker compose up --build frontend
-```
-
-### Scanning a project inside Docker
-
-The `demo_project/` folder is pre-mounted into the backend container. In the app's scan box, enter:
-```
-./demo_project
-```
-
-To scan **your own project** from another machine, either:
-1. Upload it via the **"Select Project Folder"** button in the UI, or
-2. Add a volume mount in `docker-compose.yml`:
-```yaml
-volumes:
-  - /absolute/path/to/your/project:/app/target_project:ro
-```
-Then scan path: `./target_project`
-
-### Deploying to a server / VM
-
-If the frontend and backend are on different hosts (e.g., backend on `api.example.com`), set the build arg:
-
-```bash
-VITE_API_URL=http://api.example.com:8001 docker compose up --build
-```
-
-Or in `docker-compose.yml` under `frontend.build.args`:
-```yaml
-args:
-  VITE_API_URL: http://your-server-ip:8001
-```
-
----
-
-### Running the App (Manual — no Docker)
-
-
-
-You need **two terminals** running simultaneously:
-
-**Terminal 1 — Backend (Python API)**
-```bash
-# From the project root
-uvicorn main:app --host 127.0.0.1 --port 8001 --reload
-```
-
-You should see:
-```
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://127.0.0.1:8001
-```
-
-**Terminal 2 — Frontend (React)**
-```bash
-# From the project root
 npm run dev
 ```
 
-You should see:
-```
-  VITE ready in 500ms
-  ➜  Local:   http://localhost:5173/
-```
+* **Web UI:** http://localhost:5173  
+* **API docs:** http://localhost:8001/docs
 
-**Open your browser:** http://localhost:5173
+### 5. Scan a project
+
+In the web UI, enter a project path and click **Scan Project**.  
+For the built-in demo: enter `./demo_project`
 
 ---
 
-## Using the App
+## 🐳 Running with Docker
 
-### Scanning a Project
+Docker handles Python, Node, nginx, and all dependencies automatically in a containerized setup.
 
-**Option A — Scan by folder path** (fastest for local projects):
-1. Type the path in the second text box: `./demo_project`
-2. Click **Scan Project**
-3. The 3D graph appears — green nodes are sources, red are sinks
+```bash
+# Copy environment file
+cp .env.example .env
 
-**Option B — Upload a folder** (for sharing or CI):
-1. Click **Select Project Folder**
-2. Choose a folder from your file system
-3. Click **Scan Project**
-
-### Exploring the 3D Graph
-
-| Action | How |
-|--------|-----|
-| Rotate | Left-click + drag |
-| Zoom | Scroll wheel |
-| Pan | Right-click + drag |
-| Select a node | Left-click it |
-| See node details | Check the right panel |
-
-### Asking the AI
-
-Type natural language questions in the search bar:
-
-- *"show me SQL injection paths"*
-- *"what are the high risk vulnerabilities?"*
-- *"how does user input reach the database?"*
-- *"which sinks have no sanitization?"*
-
-The AI responds with an explanation and highlights the relevant path in the graph (red animated edges).
-
-### Reading the Side Panel
-
-When you click a node:
-
-```
-🎯 Selected Node
-┌─────────────────────────────────────┐
-│ [SINK]  ● HIGH                      │
-│ cursor.execute(...)                 │
-│ File:  demo_project/db.py           │
-│ Line:  8                            │
-│ Severity: 8/10                      │
-│                                     │
-│ 🔍 Commit Attribution               │
-│ Commit:  a1b2c3d4                   │
-│ Author:  Jane Dev                   │
-│ Date:    2024-03-15                 │
-│ Message: add user search endpoint   │
-│                                     │
-│ 💥 Blast Radius (3 files):          │
-│   db.py                             │
-│   app.py                            │
-│   tests/test_search.py              │
-└─────────────────────────────────────┘
+# Build and start services
+docker compose up --build
 ```
 
-### Marking a Node as Patched
+Access the app at `http://localhost:5173`.
 
-Click **"🔧 Mark as Patched"** on any node. It turns grey and is excluded from future attack path calculations. This is useful for tracking remediation progress during a demo.
+---
+
+## VS Code Extension
+
+The repository contains a fully functional VS Code Extension located in [vscode-extension/](file:///home/vaibhav-sharma/Projects/final_year_project/project-code/TDRA/vscode-extension).
+
+### Key Features
+
+| Feature | Description |
+|---|---|
+| **Inline decorations** | Green `ENTRY` · Red `SINK` · Purple `GUARD` on every relevant code line on save |
+| **Critical SINK** | Bright red highlight when residual risk > 0.7 |
+| **New path alert** | Orange decoration when a line is part of an attack path introduced by the latest commit |
+| **Hover tooltips** | CWE classification · residual risk · effective guard strength · git blame attribution |
+| **3-Tab Risk dashboard** | Webview containing: Commit timeline · Sink inventory · Statistical validation |
+| **Pre-commit check** | RF score notification in Source Control (SCM) panel before committing |
+| **Report export** | Download full HTML security report with TDRA differential section |
+| **3D Web UI Bridge** | Open the 3D interactive force graph visualization in browser |
+
+### Installation
+
+```bash
+# Install pre-built VSIX package directly
+code --install-extension vscode-extension/vulngraph-0.2.0.vsix
+```
+
+### Start Extension Backend
+
+```bash
+# Starts backend on port 8002 for the IDE extension
+./scripts/start_extension_backend.sh
+```
 
 ---
 
 ## API Reference
 
-The backend auto-generates interactive docs at: **http://127.0.0.1:8001/docs**
+### Core Endpoints
 
-### Key Endpoints
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/cve/scan` | Trigger full AST analysis of a project path |
+| `GET` | `/api/graph` | Full program graph (nodes + edges + attack paths) |
+| `GET` | `/api/attack-paths` | Entry-to-sink paths with residual risk and CWE |
+| `GET` | `/api/tdra/timeline` | Commit history with RF scores (mock if no .git) |
+| `POST` | `/api/tdra/analyze` | Analyze all commits, sorted by RF descending |
+| `GET` | `/api/tdra/commit/{hash}` | Single commit differential analysis |
+| `GET` | `/api/tdra/risk-summary` | Aggregated risk metrics across commits |
+| `POST` | `/api/tdra/validate` | Mann-Whitney U + Cliff's delta statistical validation |
+| `GET` | `/api/git/blame` | Enrich nodes with commit blame attribution |
+| `GET` | `/api/git/timeline` | Raw git commit history |
+| `GET` | `/api/report/html` | Full HTML security report with TDRA section |
+| `POST` | `/api/query/ask` | AI explanation of findings (Groq/local/rule fallback) |
 
-#### `POST /api/cve/scan`
-Triggers a full AST scan of a folder.
+### Example: Run TDRA Validation
 
 ```bash
-curl -X POST http://127.0.0.1:8001/api/cve/scan \
+curl -X POST http://localhost:8001/api/tdra/validate \
   -H "Content-Type: application/json" \
-  -d '{"project_path": "./demo_project"}'
-```
-
-Response:
-```json
-{
-  "message": "Scan complete",
-  "nodes": 24,
-  "edges": 31,
-  "sources": 6,
-  "sinks": 7,
-  "paths_found": 4,
-  "git_root": "/home/user/project"
-}
-```
-
-#### `GET /api/graph`
-Returns the full graph (nodes + edges) for the frontend to render.
-
-```bash
-curl http://127.0.0.1:8001/api/graph
-```
-
-#### `GET /api/attack-paths`
-Returns all source→sink paths with risk scores.
-
-```bash
-curl http://127.0.0.1:8001/api/attack-paths
-```
-
-Response includes:
-```json
-{
-  "paths": [
-    {
-      "source": "demo_project/app.py:var:query",
-      "sink":   "demo_project/db.py:8:sink:cursor.execute(...)",
-      "path":   ["...", "...", "..."],
-      "score":  7.7,
-      "risk":   "HIGH",
-      "sanitizers_on_path": []
-    }
-  ]
-}
-```
-
-#### `POST /api/query/ask`
-Ask a natural language question. Returns structured JSON + AI explanation (or triggers the Offline ML-LLM Assistant on failure).
-
-```bash
-curl -X POST http://127.0.0.1:8001/api/query/ask \
-  -H "Content-Type: application/json" \
-  -d '{"query": "show me SQL injection paths"}'
-```
-
-Response:
-```json
-{
-  "intent": "show_attack_paths",
-  "target_node": "demo_project/db.py:8:sink:cursor.execute(...)",
-  "risk_filter": "HIGH",
-  "explanation": "SQL injection occurs when user-supplied input is concatenated directly into SQL queries..."
-}
-```
-
-#### `GET /api/git/blame?project_path=./demo_project`
-Returns all sink/source nodes enriched with git blame data.
-
-#### `GET /api/high-risk-paths`
-Returns only HIGH-risk paths, sorted by score descending.
-
----
-
-## Key Concepts Explained
-
-### Taint Analysis
-"Taint" means "this data came from a user and could be malicious." VulnGraph marks all user inputs as tainted and tracks that taint as it flows through your code:
-
-```python
-# Step 1: Source — data enters from user
-query = request.args.get("q")     # ← TAINTED
-
-# Step 2: Propagation — taint spreads
-search_term = query.upper()        # ← STILL TAINTED
-
-# Step 3: Sink — tainted data reaches danger
-cursor.execute(f"SELECT * FROM users WHERE name = '{search_term}'")
-# ↑ VULNERABILITY: tainted data in SQL query = SQL Injection
-```
-
-### Risk Score Calculation
-```
-score = sink_severity - (path_length × 0.3) - (sanitizers_on_path × 2.0)
-
-score ≥ 7.0  → HIGH
-score ≥ 4.0  → MEDIUM
-score < 4.0  → LOW
-```
-
-Sink severities: `eval()`=10, `subprocess`=9, `os.system`=9, `cursor.execute`=8, `open('w')`=6
-
-### Blast Radius
-When git blame finds the commit that introduced a vulnerability, it also fetches every file changed in that same commit. This tells you how much code was touched at that moment — useful for understanding the scope of a potential patch.
-
----
-
-## Configuration
-
-### `backend/.env`
-```env
-GEMINI_API_KEY=your_key_here
-```
-
-### Changing scan behavior
-Edit `backend/services/code_security_graph.py`:
-
-```python
-# Increase max files scanned (default: 5000)
-max_files: int = 5000
-
-# Change max attack path depth (default: 8)
-compute_attack_paths(limit=50, max_depth=8)
-```
-
-### Adding new sink patterns
-In `_is_sink_call()` in `code_security_graph.py`:
-```python
-# Add your pattern here:
-if qn in {"your_dangerous_function"}:
-    return True, "your_dangerous_function(...)", 8.0
+  -d '{
+    "repo_path": "./sample_project/dvja",
+    "known_vcc_hashes": ["abc1234", "def5678"],
+    "limit": 100
+  }'
 ```
 
 ---
 
-## Troubleshooting
+## Research Background
 
-### `[Errno 98] Address already in use`
-Port 8001 has a zombie process from a previous run:
-```bash
-fuser -k 8001/tcp
-# then restart uvicorn
-```
+VulnGraph implements the **Temporal Differential Reachability Analysis (TDRA)** framework, designed for commit-level security regression detection across evolving Python and Java codebases.
 
-### `Command 'pip' not found`
-Use one of these instead:
-```bash
-uv pip install -r requirements.txt
-# or
-python3 -m pip install -r requirements.txt
-```
-
-### `Failed to resolve import "react-force-graph-3d"`
-The 3D packages weren't installed. Run in a terminal tab where `npm run dev` is NOT running:
-```bash
-npm install react-force-graph-3d three-spritetext
-```
-
-### `No module named 'google.generativeai'`
-Gemini SDK not installed:
-```bash
-uv pip install google-generativeai
-# or
-python3 -m pip install google-generativeai
-```
-
-### Graph is empty after scan
-1. Check the scan response — does `nodes` > 0?
-2. Make sure the path exists: `curl -X POST .../api/cve/scan -d '{"project_path": "./demo_project"}'`
-3. Refresh the graph: click anywhere and reload
-
-### AI returns rule-based fallback instead of Gemini
-- Check `GEMINI_API_KEY` is set in `.env`
-- Verify the key works: https://aistudio.google.com
-- The backend logs will show `AI_AVAILABLE = True/False` on startup
+**Core Research Questions Addressed:**
+- **RQ1:** Does RF statistically separate vulnerability-contributing commits (VCCs) from benign commits? (Mann-Whitney U, p < 0.05)
+- **RQ2:** Does TDRA detect commit-level regressions that static snapshot SAST tools cannot?
+- **RQ3:** Does git diff-scoped analysis reduce per-commit analysis time vs full repository rebuilds?
 
 ---
 
-## Contributing
+## License
 
-### Running locally in dev mode
-
-Both servers must be running:
-```bash
-# Terminal 1
-uvicorn main:app --host 127.0.0.1 --port 8001 --reload
-
-# Terminal 2
-npm run dev
-```
-
-Both support **hot reload** — save a file and changes appear immediately.
-
-### Adding a new API endpoint
-
-1. Create or edit a router in `backend/routers/`
-2. Wire it into `main.py`:
-   ```python
-   from backend.routers.your_router import router as your_router
-   app.include_router(your_router)
-   ```
-3. Add the URL to `src/api.js` so the frontend can call it
-
-### Adding a new vulnerability pattern
-
-Open `backend/services/code_security_graph.py` and find:
-- `_is_source_expr()` — to add new input sources
-- `_is_sink_call()` — to add new dangerous functions
-- `_is_sanitizer_call()` — to add new sanitizer patterns
-
-### Frontend components
-
-| Component | Responsibility |
-|-----------|---------------|
-| `App.jsx` | Loads graph on startup, wires layout |
-| `GraphCanvas.jsx` | 3D rendering only — reads from Zustand store |
-| `SidePanel.jsx` | Displays selected node info — reads from Zustand store |
-| `QueryBar.jsx` | Handles scan + AI query actions — writes to Zustand store |
-| `useStore.js` | Single source of truth: `graph`, `path`, `selectedNode`, `explanation` |
-
-### Code style
-
-- Python: follow PEP 8, use type hints (`def foo(x: str) -> list[str]:`)
-- JavaScript: functional components, hooks only, no class components
-- CSS: use CSS variables from `:root` in `styles.css`, no inline styles
+MIT License. See `LICENSE` for details.
 
 ---
 
-## How the Data Flows (End to End)
-
-```
-User clicks "Scan Project"
-        │
-        ▼
-QueryBar.jsx → POST /api/cve/scan
-        │
-        ▼
-scan.py router
-        │
-        ▼
-code_security_graph.py
-  ├── Walk .py files
-  ├── ast.parse() each file
-  ├── _TaintVisitor walks AST nodes
-  │     ├── Finds sources → adds green nodes
-  │     ├── Propagates taint through assignments
-  │     ├── Finds sinks → adds red nodes + edges
-  │     └── Finds sanitizers → purple nodes
-  └── Builds nx.DiGraph
-        │
-        ▼
-git_history.py (if .git found)
-  └── Enriches sink/source nodes with blame data
-        │
-        ▼
-Returns {nodes, edges, sources, sinks, paths_found}
-        │
-        ▼
-App.jsx → GET /api/graph
-        │
-        ▼
-GraphCanvas.jsx → Three.js renders 3D force graph
-        │
-User clicks a node
-        ▼
-SidePanel.jsx shows:
-  type + risk + file + line + git blame + blast radius
-        │
-User types "show SQL injection paths"
-        ▼
-QueryBar.jsx → POST /api/query/ask
-        │
-        ▼
-query.py → Gemini 2.0 Flash → structured JSON
-        │
-        ▼
-GET /api/graph/path?target=<sink_id>
-        │
-        ▼
-GraphCanvas.jsx highlights path in red with particles
-```
-
----
-
-*Built for the FusionX hackathon. Scans code, not excuses.*
+*VulnGraph is a major security analysis project. All analysis runs 100% locally — no code leaves your machine.*
