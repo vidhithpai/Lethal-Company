@@ -245,7 +245,7 @@ const App = () => {
         <MetricsBar />
         <div className="main-layout" style={{ display: "flex", flex: 1, overflow: "hidden" }}>
           <div className="graph-wrap" style={{ flex: 1, position: "relative" }}>
-            <GraphCanvas onNodeClick={setSelectedNode} />
+            <GraphCanvas repoPath={repoPath} onNodeClick={setSelectedNode} />
           </div>
           <div style={{ width: "30%", minWidth: "300px", height: "100%" }}>
             <UnifiedPanel

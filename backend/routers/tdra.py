@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # ==============================================================================
 # MODELING DECISION FOR PER-PATH RISK CONTRIBUTION: OPTION 1 IMPLEMENTED
 # ==============================================================================
@@ -9,9 +11,9 @@
 # GET /api/tdra/commit/{commit_hash}/path-contributions?repo_path=...
 # ==============================================================================
 
-from __future__ import annotations
-
+import re
 import time
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -378,3 +380,70 @@ async def get_tdra_timeline(repo_path: str = Query(...), limit: int = Query(50))
                 "source": "no_git",
                 "reason": f"Git read error: {str(e2)[:150]}"
             }
+
+
+_COMMIT_GRAPH_DIFF_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
+
+@router.get("/commit-graph-diff")
+def get_commit_graph_diff(repo_path: str = Query(...), commit: str = Query(...)):
+    """
+    GET /api/tdra/commit-graph-diff?repo_path=<path>&commit=<hash>
+    Returns per-node and per-edge diff status between parent and commit.
+    """
+    repo_path = (repo_path or "").strip()
+    if not repo_path:
+        raise HTTPException(status_code=400, detail="repo_path is required")
+
+    commit = (commit or "").strip()
+    if not commit or not re.match(r"^[0-9a-fA-F]{7,40}$", commit):
+        raise HTTPException(status_code=400, detail="Invalid commit hash format")
+
+    p = Path(repo_path).resolve()
+    if not p.exists():
+        raise HTTPException(status_code=404, detail=f"repo_path does not exist: {repo_path}")
+
+    git_root = str(p) if (p / ".git").exists() else find_git_root(str(p))
+    if not git_root:
+        curr = p
+        for _ in range(4):
+            if (curr / ".git").exists():
+                git_root = str(curr)
+                break
+            curr = curr.parent
+
+    if not git_root or not (Path(git_root) / ".git").exists():
+        raise HTTPException(status_code=404, detail=f"No git repository found for path: {repo_path}")
+
+    cache_key = (git_root, commit.lower())
+    if cache_key in _COMMIT_GRAPH_DIFF_CACHE:
+        return _COMMIT_GRAPH_DIFF_CACHE[cache_key]
+
+    try:
+        engine = DifferentialEngine(git_root)
+        try:
+            commit_obj = engine.repo.commit(commit)
+            full_hash = commit_obj.hexsha
+            parent_hash = commit_obj.parents[0].hexsha if commit_obj.parents else None
+        except Exception:
+            raise HTTPException(status_code=404, detail=f"Commit hash '{commit}' not found in repository")
+
+        full_cache_key = (git_root, full_hash.lower())
+        if full_cache_key in _COMMIT_GRAPH_DIFF_CACHE:
+            return _COMMIT_GRAPH_DIFF_CACHE[full_cache_key]
+
+        res = engine.get_commit_graph_diff(parent_hash, full_hash)
+        _COMMIT_GRAPH_DIFF_CACHE[cache_key] = res
+        _COMMIT_GRAPH_DIFF_CACHE[full_cache_key] = res
+        return res
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {
+            "commit": commit,
+            "nodes": {},
+            "edges": {},
+            "removed_nodes": [],
+            "removed_edges": [],
+            "weakened": {},
+            "truncated": False,
+        }

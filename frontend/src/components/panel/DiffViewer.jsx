@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { endpoints } from "../../services/api";
+import useStore from "../../store/useStore";
 
 const BADGE_CONFIG = {
   entry: { label: "ENTRY", color: "#3FB950", bg: "rgba(63, 185, 80, 0.2)", border: "#3FB950" },
@@ -24,6 +25,11 @@ export default function DiffViewer({ repoPath, commitHash, onClose }) {
   const [collapsedFiles, setCollapsedFiles] = useState({});
   const [showOnlyChanged, setShowOnlyChanged] = useState(false);
   const [showOnlySecurity, setShowOnlySecurity] = useState(false);
+
+  const selectedNode = useStore((s) => s.selectedNode);
+  const graph = useStore((s) => s.graph);
+  const setSelectedNode = useStore((s) => s.setSelectedNode);
+  const bumpZoom = useStore((s) => s.bumpZoom);
 
   useEffect(() => {
     if (!commitHash) return;
@@ -66,6 +72,66 @@ export default function DiffViewer({ repoPath, commitHash, onClose }) {
       isMounted = false;
     };
   }, [commitHash, repoPath]);
+
+  // Direction 1: When a node is clicked in 3D graph, scroll matching file & line into view
+  useEffect(() => {
+    if (!selectedNode || !diffData?.files) return;
+    const nodeFile = (selectedNode.file || "").toLowerCase();
+    const nodeLine = selectedNode.line || selectedNode.lineno;
+    if (!nodeFile || !nodeLine) return;
+
+    const nodeBase = nodeFile.split(/[/\\]/).pop();
+    const matchedFile = diffData.files.find((f) => {
+      const fLower = f.path.toLowerCase();
+      return fLower === nodeFile || fLower.endsWith(nodeBase) || nodeFile.endsWith(fLower);
+    });
+
+    if (matchedFile) {
+      setCollapsedFiles((prev) => ({ ...prev, [matchedFile.path]: false }));
+
+      setTimeout(() => {
+        const targetId = `diff-line-${matchedFile.path}-${nodeLine}`;
+        const el = document.getElementById(targetId);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          el.style.transition = "box-shadow 0.3s";
+          el.style.boxShadow = "inset 0 0 0 2px #58A6FF";
+          setTimeout(() => {
+            el.style.boxShadow = "none";
+          }, 2000);
+        }
+      }, 150);
+    }
+  }, [selectedNode, diffData]);
+
+  // Direction 2: Clicking a badge in DiffViewer focuses the matching node in 3D graph
+  const handleBadgeClick = (mark, filePath, lineNo) => {
+    const nodes = graph?.nodes || [];
+    const fBase = filePath.split(/[/\\]/).pop().toLowerCase();
+
+    let matched = nodes.find((n) => {
+      const nf = (n.file || "").toLowerCase();
+      const nl = n.line || n.lineno;
+      return (nf.endsWith(fBase) || fBase.endsWith(nf.split(/[/\\]/).pop())) && nl === lineNo;
+    });
+
+    if (!matched) {
+      matched = nodes.find((n) => {
+        const nf = (n.file || "").toLowerCase();
+        const nt = (n.type || "").toLowerCase();
+        const typeMatch =
+          (mark === "sink" && nt === "sink") ||
+          (mark === "entry" && nt === "source") ||
+          (mark === "guard" && (nt === "sanitizer" || nt === "guard"));
+        return (nf.endsWith(fBase) || fBase.endsWith(nf.split(/[/\\]/).pop())) && typeMatch;
+      });
+    }
+
+    if (matched) {
+      setSelectedNode(matched);
+      bumpZoom();
+    }
+  };
 
   const toggleFileCollapse = (path) => {
     setCollapsedFiles((prev) => ({
@@ -318,7 +384,6 @@ export default function DiffViewer({ repoPath, commitHash, onClose }) {
                       </div>
                     ) : (
                       file.hunks.map((hunk, hIdx) => {
-                        // Filter lines based on active toggles
                         const visibleLines = hunk.lines.filter((line) => {
                           if (showOnlyChanged && line.type === "context") return false;
                           if (showOnlySecurity && (!line.marks || line.marks.length === 0)) return false;
@@ -365,10 +430,13 @@ export default function DiffViewer({ repoPath, commitHash, onClose }) {
 
                                 const prefix = isAdd ? "+" : isDel ? "-" : " ";
                                 const textColor = isAdd ? "#E6EDF3" : isDel ? "#FFA198" : "#8B949E";
+                                const lineNo = line.new_no || line.old_no;
+                                const lineElemId = `diff-line-${file.path}-${lineNo}`;
 
                                 return (
                                   <div
                                     key={lIdx}
+                                    id={lineElemId}
                                     style={{
                                       display: "flex",
                                       alignItems: "stretch",
@@ -457,6 +525,11 @@ export default function DiffViewer({ repoPath, commitHash, onClose }) {
                                           return (
                                             <span
                                               key={mIdx}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleBadgeClick(mark, file.path, lineNo);
+                                              }}
+                                              title="Click to focus node in 3D graph"
                                               style={{
                                                 fontSize: 9,
                                                 fontWeight: 800,
@@ -467,6 +540,7 @@ export default function DiffViewer({ repoPath, commitHash, onClose }) {
                                                 borderRadius: 3,
                                                 lineHeight: "15px",
                                                 display: "inline-block",
+                                                cursor: "pointer",
                                               }}
                                             >
                                               {cfg.label}
@@ -493,4 +567,3 @@ export default function DiffViewer({ repoPath, commitHash, onClose }) {
     </div>
   );
 }
-

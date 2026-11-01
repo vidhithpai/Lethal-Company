@@ -3,6 +3,7 @@ import ForceGraph3D from "react-force-graph-3d";
 import SpriteText from "three-spritetext";
 import * as THREE from "three";
 import useStore from "../../store/useStore";
+import { endpoints } from "../../services/api";
 import SchematicView from "./SchematicView";
 import ViewToggle from "./ViewToggle";
 
@@ -61,8 +62,44 @@ function getEdgeStyle(link) {
   if (raw.includes('same_file')) {
     return { color: '#374151', width: 1.0, opacity: 0.40, label: 'Same-file' };
   }
-  // Default: generic edge
   return { color: 'rgba(6, 182, 212, 0.35)', width: 1.2, opacity: 0.4, label: '' };
+}
+
+// ─── Disposal helper to prevent memory leaks ───────────────────────────────────
+function disposeThreeObject(obj) {
+  if (!obj) return;
+  obj.traverse((child) => {
+    if (child.geometry) {
+      child.geometry.dispose();
+    }
+    if (child.material) {
+      if (Array.isArray(child.material)) {
+        child.material.forEach((m) => m && m.dispose && m.dispose());
+      } else {
+        child.material.dispose && child.material.dispose();
+      }
+    }
+  });
+}
+
+// ─── Diff Status Resolver with Strict Priority: weakened > added > touched ─────
+function getNodeDiffStatus(node, diffStatus, diffNodeSet) {
+  if (node._isGhost || node.diff_status === 'removed') return 'removed';
+  const id = node.id;
+  if (!diffStatus && (!diffNodeSet || !diffNodeSet.size)) return null;
+
+  // 1. Weakened (highest priority)
+  if (diffStatus?.weakened && diffStatus.weakened[id]) return 'weakened';
+  if (diffStatus?.nodes && diffStatus.nodes[id] === 'weakened') return 'weakened';
+
+  // 2. Added
+  if (diffStatus?.nodes && diffStatus.nodes[id] === 'added') return 'added';
+  if (diffNodeSet && diffNodeSet.has(id)) return 'added';
+
+  // 3. Touched
+  if (diffStatus?.nodes && diffStatus.nodes[id] === 'touched') return 'touched';
+
+  return null;
 }
 
 // ─── Top-Left HUD ─────────────────────────────────────────────────────────────
@@ -92,7 +129,7 @@ const ThreatNebulaHUD = ({ stats }) => (
   </div>
 );
 
-// ─── Bottom-Left Legend HUD ───────────────────────────────────────────────────
+// ─── Bottom-Left Standard Legend HUD ──────────────────────────────────────────
 const LegendHUD = () => (
   <div className="hud-panel hud-bottom-left">
     <div className="hud-legend-title">LEGEND</div>
@@ -152,6 +189,84 @@ const LegendHUD = () => (
   </div>
 );
 
+// ─── Bottom-Left Diff Mode Legend HUD ─────────────────────────────────────────
+const DiffLegendHUD = ({ counts }) => (
+  <div className="hud-panel hud-bottom-left" style={{ minWidth: 235 }}>
+    <div className="hud-legend-title" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+      <span>DIFF MODE</span>
+      <span style={{ fontSize: 9, color: '#FACC15', fontWeight: 700, padding: '2px 6px', background: 'rgba(250, 204, 21, 0.15)', borderRadius: 4, letterSpacing: 0.5 }}>
+        ACTIVE
+      </span>
+    </div>
+
+    {/* Summary Badge Row */}
+    <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 10, fontSize: 11, fontWeight: 600 }}>
+      {counts.added > 0 && (
+        <span style={{ color: '#FACC15', background: 'rgba(250, 204, 21, 0.12)', padding: '2px 6px', borderRadius: 3 }}>
+          +{counts.added} added
+        </span>
+      )}
+      {counts.weakened > 0 && (
+        <span style={{ color: '#FB923C', background: 'rgba(251, 146, 60, 0.12)', padding: '2px 6px', borderRadius: 3 }}>
+          {counts.weakened} weakened
+        </span>
+      )}
+      {counts.removed > 0 && (
+        <span style={{ color: '#94A3B8', background: 'rgba(148, 163, 184, 0.12)', padding: '2px 6px', borderRadius: 3 }}>
+          -{counts.removed} removed
+        </span>
+      )}
+      {counts.touched > 0 && (
+        <span style={{ color: '#E2E8F0', background: 'rgba(255, 255, 255, 0.08)', padding: '2px 6px', borderRadius: 3 }}>
+          {counts.touched} touched
+        </span>
+      )}
+      {counts.added === 0 && counts.weakened === 0 && counts.removed === 0 && counts.touched === 0 && (
+        <span style={{ color: '#64748B' }}>No graph changes</span>
+      )}
+    </div>
+
+    <div style={{ fontSize: 10, fontWeight: 600, color: '#6B7280', marginBottom: 6, textTransform: 'uppercase' }}>
+      DIFF INDICATORS
+    </div>
+
+    <div className="hud-legend-grid" style={{ gridTemplateColumns: '1fr', gap: 6 }}>
+      <div className="hud-legend-item">
+        <span style={{ width: 12, height: 12, borderRadius: '50%', border: '2px solid #FACC15', display: 'inline-block', flexShrink: 0 }} />
+        <span>Gold ring (pulse): Added node</span>
+      </div>
+      <div className="hud-legend-item">
+        <span style={{ width: 12, height: 12, borderRadius: '50%', border: '2px solid #FB923C', display: 'inline-block', flexShrink: 0 }} />
+        <span>Amber ring: Weakened guard</span>
+      </div>
+      <div className="hud-legend-item">
+        <span style={{ width: 12, height: 12, borderRadius: '50%', border: '1.5px solid #FFFFFF', display: 'inline-block', flexShrink: 0 }} />
+        <span>Thin white ring: Touched file node</span>
+      </div>
+      <div className="hud-legend-item">
+        <span style={{ width: 12, height: 12, borderRadius: '50%', border: '1.5px dashed #94A3B8', display: 'inline-block', flexShrink: 0 }} />
+        <span>Wireframe sphere: Removed node</span>
+      </div>
+      <div className="hud-legend-item">
+        <div style={{ width: 16, height: 3, background: '#FACC15', borderRadius: 1, flexShrink: 0, boxShadow: '0 0 4px #FACC15' }} />
+        <span>Gold edge + particles: Added path</span>
+      </div>
+      <div className="hud-legend-item">
+        <div style={{ width: 16, height: 3, background: '#FB923C', borderRadius: 1, flexShrink: 0 }} />
+        <span>Amber edge: Weakened path into sink</span>
+      </div>
+      <div className="hud-legend-item">
+        <div style={{ width: 16, height: 2, background: 'rgba(255,255,255,0.4)', borderRadius: 1, flexShrink: 0 }} />
+        <span>Thin white edge: Removed edge</span>
+      </div>
+    </div>
+
+    <div className="hud-legend-footer" style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 6, marginTop: 8 }}>
+      Body: Entry (green) &bull; Sink (red) &bull; Guard (purple)
+    </div>
+  </div>
+);
+
 // ─── Bottom-Right Interaction Hint HUD ───────────────────────────────────────
 const ControlsHintHUD = () => (
   <div className="hud-panel hud-bottom-right">
@@ -160,31 +275,48 @@ const ControlsHintHUD = () => (
 );
 
 // ─── Animated 3D Node Object Builder ──────────────────────────────────────────
-let _nodeThreeObjectCalls = 0;
-
-function buildNodeObject(node, isOnPath, animatedObjectsRef, diffMode, isDiffNode) {
-  _nodeThreeObjectCalls++;
-  if (_nodeThreeObjectCalls === 1 || _nodeThreeObjectCalls % 50 === 0) {
-    console.log(`[GraphCanvas] nodeThreeObject invocation #${_nodeThreeObjectCalls}: Creating new THREE.Group, Geometries (Icosahedron/Dodecahedron/Sphere), Materials, and SpriteText with NO caching/pooling.`);
-  }
+function buildNodeObject(node, isOnPath, animatedObjectsRef, diffMode, diffStatusType, weakenedInfo) {
   const group = new THREE.Group();
   const nodeType = String(node.type || '').toLowerCase();
   const radius = getNodeSize(node) / 2;
-  
-  let color = getNodeColor(node);
-  if (diffMode && isDiffNode) {
-    color = "#FF4444";
+  const isDiffNode = Boolean(diffStatusType);
+
+  // BODY COLOR: Always remains type colour! Never overwritten to red in diff mode.
+  const color = getNodeColor(node);
+
+  let coreOpacity;
+  if (diffMode) {
+    if (diffStatusType === 'removed') {
+      coreOpacity = 0.30;
+    } else if (isDiffNode) {
+      coreOpacity = 0.95;
+    } else {
+      coreOpacity = 0.15; // Dimmed noticeably to 0.15 for untouched nodes
+    }
+  } else {
+    coreOpacity = node.patched ? 0.4 : 0.95;
   }
 
-  const coreOpacity = diffMode ? (isDiffNode ? 1.0 : 0.2) : (node.patched ? 0.4 : 0.95);
   let coreMesh;
 
-  if (nodeType === "source") {
+  if (diffStatusType === 'removed') {
+    // GHOST NODE: hollow sphere, white dashed/wireframe outline, opacity 0.30
+    const ghostGeo = new THREE.SphereGeometry(radius, 14, 14);
+    const ghostMat = new THREE.MeshBasicMaterial({
+      color: '#FFFFFF',
+      wireframe: true,
+      transparent: true,
+      opacity: 0.30,
+    });
+    coreMesh = new THREE.Mesh(ghostGeo, ghostMat);
+    group.add(coreMesh);
+
+  } else if (nodeType === "source") {
     const geo = new THREE.IcosahedronGeometry(radius, 0);
     const mat = new THREE.MeshPhongMaterial({
       color,
-      emissive: diffMode && isDiffNode ? '#FF4444' : '#059669',
-      emissiveIntensity: 0.6,
+      emissive: '#059669',
+      emissiveIntensity: diffMode && !isDiffNode ? 0.05 : 0.6,
       shininess: 80,
       transparent: true,
       opacity: coreOpacity,
@@ -193,10 +325,10 @@ function buildNodeObject(node, isOnPath, animatedObjectsRef, diffMode, isDiffNod
 
     const shellGeo = new THREE.IcosahedronGeometry(radius + 1.8, 1);
     const shellMat = new THREE.MeshBasicMaterial({
-      color: diffMode && isDiffNode ? '#FF4444' : '#10B981',
+      color: '#10B981',
       wireframe: true,
       transparent: true,
-      opacity: diffMode ? (isDiffNode ? 0.5 : 0.05) : 0.35,
+      opacity: diffMode ? (isDiffNode ? 0.45 : 0.02) : 0.35,
     });
     const shell = new THREE.Mesh(shellGeo, shellMat);
     group.add(shell);
@@ -205,9 +337,9 @@ function buildNodeObject(node, isOnPath, animatedObjectsRef, diffMode, isDiffNod
   } else if (nodeType === "sink") {
     const geo = new THREE.DodecahedronGeometry(radius, 0);
     const mat = new THREE.MeshPhongMaterial({
-      color: diffMode && isDiffNode ? '#FF4444' : '#EF4444',
+      color,
       emissive: '#DC2626',
-      emissiveIntensity: 0.7,
+      emissiveIntensity: diffMode && !isDiffNode ? 0.05 : 0.7,
       shininess: 100,
       transparent: true,
       opacity: coreOpacity,
@@ -220,7 +352,7 @@ function buildNodeObject(node, isOnPath, animatedObjectsRef, diffMode, isDiffNod
       color: '#EF4444',
       wireframe: true,
       transparent: true,
-      opacity: diffMode ? (isDiffNode ? 0.5 : 0.05) : (isHighRisk ? 0.45 : 0.25),
+      opacity: diffMode ? (isDiffNode ? 0.45 : 0.02) : (isHighRisk ? 0.45 : 0.25),
     });
     const shell = new THREE.Mesh(shellGeo, shellMat);
     group.add(shell);
@@ -230,7 +362,7 @@ function buildNodeObject(node, isOnPath, animatedObjectsRef, diffMode, isDiffNod
     const auraMat = new THREE.MeshLambertMaterial({
       color: '#DC2626',
       transparent: true,
-      opacity: diffMode ? (isDiffNode ? 0.3 : 0.02) : (isHighRisk ? 0.22 : 0.1),
+      opacity: diffMode ? (isDiffNode ? 0.25 : 0.01) : (isHighRisk ? 0.22 : 0.1),
     });
     group.add(new THREE.Mesh(auraGeo, auraMat));
 
@@ -239,7 +371,7 @@ function buildNodeObject(node, isOnPath, animatedObjectsRef, diffMode, isDiffNod
     const mat = new THREE.MeshPhongMaterial({
       color,
       emissive: '#6D28D9',
-      emissiveIntensity: 0.5,
+      emissiveIntensity: diffMode && !isDiffNode ? 0.05 : 0.5,
       shininess: 60,
       transparent: true,
       opacity: coreOpacity,
@@ -251,7 +383,7 @@ function buildNodeObject(node, isOnPath, animatedObjectsRef, diffMode, isDiffNod
       color,
       wireframe: true,
       transparent: true,
-      opacity: diffMode ? (isDiffNode ? 0.5 : 0.05) : 0.4,
+      opacity: diffMode ? (isDiffNode ? 0.45 : 0.02) : 0.4,
     });
     const shell = new THREE.Mesh(shellGeo, shellMat);
     group.add(shell);
@@ -262,7 +394,7 @@ function buildNodeObject(node, isOnPath, animatedObjectsRef, diffMode, isDiffNod
     const mat = new THREE.MeshPhongMaterial({
       color,
       emissive: '#D97706',
-      emissiveIntensity: 0.4,
+      emissiveIntensity: diffMode && !isDiffNode ? 0.05 : 0.4,
       transparent: true,
       opacity: coreOpacity,
     });
@@ -273,7 +405,7 @@ function buildNodeObject(node, isOnPath, animatedObjectsRef, diffMode, isDiffNod
     const mat = new THREE.MeshPhongMaterial({
       color,
       emissive: isOnPath ? color : '#1E293B',
-      emissiveIntensity: isOnPath ? 0.6 : 0.2,
+      emissiveIntensity: diffMode && !isDiffNode ? 0.05 : (isOnPath ? 0.6 : 0.2),
       shininess: 40,
       transparent: true,
       opacity: coreOpacity,
@@ -281,23 +413,75 @@ function buildNodeObject(node, isOnPath, animatedObjectsRef, diffMode, isDiffNod
     coreMesh = new THREE.Mesh(geo, mat);
   }
 
-  group.add(coreMesh);
-  group.userData.coreMesh = coreMesh;
+  if (coreMesh) {
+    group.add(coreMesh);
+    group.userData.coreMesh = coreMesh;
+  }
   group.userData.nodeType = nodeType;
   group.userData.isOnPath = isOnPath;
 
-  if (diffMode && isDiffNode) {
-    const redGlowGeo = new THREE.SphereGeometry(radius + 3.5, 16, 16);
-    const redGlowMat = new THREE.MeshBasicMaterial({
-      color: '#FF4444',
-      wireframe: true,
-      transparent: true,
-      opacity: 0.8,
-    });
-    const redGlow = new THREE.Mesh(redGlowGeo, redGlowMat);
-    group.add(redGlow);
-    group.userData.redGlow = redGlow;
+  // ─── DIFF RINGS & HALOS ──────────────────────────────────────────────────────
+  if (diffMode) {
+    if (diffStatusType === 'added') {
+      // Gold ring / halo #FACC15 with slow pulse (scale 1.0 to 1.25, ~1.5s loop)
+      const haloGeo = new THREE.SphereGeometry(radius + 2.5, 16, 16);
+      const haloMat = new THREE.MeshBasicMaterial({
+        color: '#FACC15',
+        wireframe: true,
+        transparent: true,
+        opacity: 0.85,
+      });
+      const haloMesh = new THREE.Mesh(haloGeo, haloMat);
+      group.add(haloMesh);
+      group.userData.addedHalo = haloMesh;
+
+      const ringGeo = new THREE.TorusGeometry(radius + 1.8, 0.35, 12, 24);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: '#FACC15',
+        transparent: true,
+        opacity: 0.90,
+      });
+      const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+      ringMesh.rotation.x = Math.PI / 3;
+      group.add(ringMesh);
+      group.userData.addedRing = ringMesh;
+
+    } else if (diffStatusType === 'weakened') {
+      // Amber ring #FB923C, plus small text sprite label "A <before> -> <after>"
+      const ringGeo = new THREE.TorusGeometry(radius + 2.0, 0.40, 12, 24);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: '#FB923C',
+        transparent: true,
+        opacity: 0.95,
+      });
+      const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+      ringMesh.rotation.x = Math.PI / 3;
+      group.add(ringMesh);
+
+      const before = weakenedInfo?.before != null ? Number(weakenedInfo.before).toFixed(2) : "0.90";
+      const after = weakenedInfo?.after != null ? Number(weakenedInfo.after).toFixed(2) : "0.00";
+      const weakenedLabel = `A ${before} -> ${after}`;
+      const weakenedSprite = new SpriteText(weakenedLabel);
+      weakenedSprite.color = "#FB923C";
+      weakenedSprite.textHeight = 2.4;
+      weakenedSprite.fontFace = "JetBrains Mono, monospace";
+      weakenedSprite.position.set(0, -(radius + 3.2), 0);
+      group.add(weakenedSprite);
+
+    } else if (diffStatusType === 'touched') {
+      // Thin white ring, no animation
+      const ringGeo = new THREE.TorusGeometry(radius + 1.6, 0.20, 12, 24);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: '#FFFFFF',
+        transparent: true,
+        opacity: 0.75,
+      });
+      const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+      ringMesh.rotation.x = Math.PI / 3;
+      group.add(ringMesh);
+    }
   } else if (isOnPath && !node.patched) {
+    // Normal attack path glow
     const pathGlowGeo = new THREE.SphereGeometry(radius + 3.0, 16, 16);
     const pathGlowMat = new THREE.MeshBasicMaterial({
       color: nodeType === "sink" ? '#EF4444' : (nodeType === "source" ? '#10B981' : '#F59E0B'),
@@ -310,21 +494,35 @@ function buildNodeObject(node, isOnPath, animatedObjectsRef, diffMode, isDiffNod
     group.userData.pathGlow = pathGlow;
   }
 
+  // ─── Text Sprite Label ───────────────────────────────────────────────────────
   const rawLabel = node.label || (node.id ? node.id.split(":").pop() : "?");
   const displayLabel = rawLabel.length > 22 ? rawLabel.slice(0, 22) + "…" : rawLabel;
-  let tagSuffix = "";
-  if (nodeType === "source") tagSuffix = "\nSRC";
-  else if (nodeType === "sink") tagSuffix = "\nSINK · HIGH";
-  else if (nodeType === "sanitizer") tagSuffix = "\nFLT";
-  else if (nodeType === "intermediate") tagSuffix = "\nINT";
 
-  const sprite = new SpriteText(displayLabel + tagSuffix);
+  let labelText;
+  if (diffStatusType === 'removed') {
+    // Strikethrough style with combining stroke \u0336
+    const strikethrough = (text) => text.split('').map(c => c + '\u0336').join('');
+    labelText = `${strikethrough(displayLabel)}\n[REMOVED]`;
+  } else {
+    let tagSuffix = "";
+    if (nodeType === "source") tagSuffix = "\nSRC";
+    else if (nodeType === "sink") tagSuffix = "\nSINK · HIGH";
+    else if (nodeType === "sanitizer") tagSuffix = "\nFLT";
+    else if (nodeType === "intermediate") tagSuffix = "\nINT";
+    labelText = displayLabel + tagSuffix;
+  }
+
+  const sprite = new SpriteText(labelText);
   if (diffMode) {
-    sprite.color = isDiffNode ? "#FF4444" : "#334155";
+    if (diffStatusType === 'added') sprite.color = "#FACC15";
+    else if (diffStatusType === 'weakened') sprite.color = "#FB923C";
+    else if (diffStatusType === 'touched') sprite.color = "#E2E8F0";
+    else if (diffStatusType === 'removed') sprite.color = "#94A3B8";
+    else sprite.color = "#334155"; // Dimmed to 0.15 equivalent for untouched
   } else {
     sprite.color = node.patched ? "#64748B" : (isOnPath ? "#FFFFFF" : (nodeType === "sink" ? "#EF4444" : (nodeType === "source" ? "#10B981" : "#94A3B8")));
   }
-  sprite.textHeight = (isOnPath || (diffMode && isDiffNode)) ? 3.4 : (nodeType === 'normal' ? 2.0 : 2.6);
+  sprite.textHeight = (isOnPath || isDiffNode) ? 3.2 : (nodeType === 'normal' ? 2.0 : 2.6);
   sprite.fontFace = "JetBrains Mono, monospace";
   sprite.position.set(0, radius + 4.5, 0);
   group.add(sprite);
@@ -337,34 +535,73 @@ function buildNodeObject(node, isOnPath, animatedObjectsRef, diffMode, isDiffNod
 }
 
 // ─── Main GraphCanvas Component ──────────────────────────────────────────────
-const GraphCanvas = ({ onNodeClick }) => {
-  const graph        = useStore((state) => state.graph);
-  const path         = useStore((state) => state.path);
-  const diffMode     = useStore((state) => state.diffMode);
-  const newPaths     = useStore((state) => state.newPaths);
+const GraphCanvas = ({ repoPath, onNodeClick }) => {
+  const graph          = useStore((state) => state.graph);
+  const path           = useStore((state) => state.path);
+  const diffMode       = useStore((state) => state.diffMode);
+  const selectedCommit = useStore((state) => state.selectedCommit);
+  const newPaths       = useStore((state) => state.newPaths);
+  const diffStatus     = useStore((state) => state.diffStatus);
+  const setDiffStatus  = useStore((state) => state.setDiffStatus);
   const nodeVisibility = useStore((state) => state.nodeVisibility);
   const edgeVisibility = useStore((state) => state.edgeVisibility);
   const focusDepth     = useStore((state) => state.focusDepth);
   const selectedNode   = useStore((state) => state.selectedNode);
-  const containerRef = useRef(null);
-  const graphRef     = useRef(null);
-  const [size, setSize] = useState({ width: 800, height: 600 });
+  const zoomTrigger    = useStore((state) => state.zoomTrigger);
+
+  const containerRef       = useRef(null);
+  const graphRef           = useRef(null);
+  const [size, setSize]     = useState({ width: 800, height: 600 });
   const [viewMode, setViewMode] = useState('3d');
   const animatedObjectsRef = useRef([]);
 
-  // STEP 2 Instrumentation: Component render counting and trigger detection
-  const renderCountRef = useRef(0);
-  const lastGraphRef = useRef(null);
-  const frameCountRef = useRef(0);
-  const lastFpsTimeRef = useRef(performance.now());
-  renderCountRef.current++;
-  console.count('[GraphCanvas] Component Render');
-  const isGraphDataNew = lastGraphRef.current !== graph;
-  console.log(
-    `[GraphCanvas] Render #${renderCountRef.current} | Graph data reference changed: ${isGraphDataNew} | Store state: { nodeCount: ${graph?.nodes?.length || 0}, edgeCount: ${graph?.links?.length || 0}, pathLength: ${path?.length || 0}, diffMode: ${diffMode}, selectedNode: ${selectedNode?.id || 'none'}, focusDepth: ${focusDepth} }`
-  );
-  lastGraphRef.current = graph;
+  const selectedCommitHash = useMemo(() => {
+    return selectedCommit?.commit_hash || selectedCommit?.hash || (typeof selectedCommit === 'string' ? selectedCommit : null);
+  }, [selectedCommit]);
 
+  // ─── Fetch commitGraphDiff on diffMode & commit change ───────────────────────
+  useEffect(() => {
+    if (!diffMode || !selectedCommitHash) {
+      if (diffStatus !== null) {
+        setDiffStatus(null);
+      }
+      return;
+    }
+
+    let isMounted = true;
+    const effectiveRepo = repoPath || localStorage.getItem("repo_path") || "./demo_project";
+
+    fetch(endpoints.commitGraphDiff(selectedCommitHash, effectiveRepo))
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        if (isMounted) {
+          setDiffStatus(data);
+        }
+      })
+      .catch((err) => {
+        console.warn("[GraphCanvas] Failed to fetch commit-graph-diff:", err);
+        if (isMounted) {
+          setDiffStatus({
+            commit: selectedCommitHash,
+            nodes: {},
+            edges: {},
+            removed_nodes: [],
+            removed_edges: [],
+            weakened: {},
+            truncated: false,
+          });
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [diffMode, selectedCommitHash, repoPath, setDiffStatus]);
+
+  // ─── Base filtering (nodeVisibility, edgeVisibility, focusDepth) ─────────────
   const filteredGraph = useMemo(() => {
     const nodes = graph?.nodes || [];
     const links = graph?.links || [];
@@ -378,7 +615,6 @@ const GraphCanvas = ({ onNodeClick }) => {
     // 2. Focus depth filter (if a node is selected and depth is set)
     if (focusDepth !== null && selectedNode) {
       const neighborSet = new Set([selectedNode.id]);
-      // BFS outward N hops
       let frontier = [selectedNode.id];
       for (let hop = 0; hop < focusDepth; hop++) {
         const next = [];
@@ -409,6 +645,61 @@ const GraphCanvas = ({ onNodeClick }) => {
     return { nodes: visibleNodes, links: visibleLinks };
   }, [graph, nodeVisibility, edgeVisibility, focusDepth, selectedNode]);
 
+  // ─── Displayed Graph (injects ghost nodes & removed edges in diff mode only) ─
+  const displayedGraph = useMemo(() => {
+    if (!diffMode || !diffStatus) {
+      return filteredGraph;
+    }
+
+    const currentNodes = filteredGraph.nodes || [];
+    const currentLinks = filteredGraph.links || [];
+    const existingNodeIds = new Set(currentNodes.map(n => n.id));
+
+    // Synthetic ghost nodes from diffStatus.removed_nodes (respecting nodeVisibility)
+    const removedNodes = (diffStatus.removed_nodes || []).filter(rn => {
+      if (existingNodeIds.has(rn.id)) return false;
+      const t = String(rn.type || 'normal').toLowerCase();
+      return nodeVisibility[t] !== false;
+    }).map(rn => ({
+      ...rn,
+      id: rn.id,
+      label: rn.label || rn.id,
+      type: rn.type || 'sanitizer',
+      file: rn.file,
+      line: rn.line,
+      _isGhost: true,
+      diff_status: 'removed',
+    }));
+
+    const allNodes = [...currentNodes, ...removedNodes];
+    const allNodeIds = new Set(allNodes.map(n => n.id));
+
+    // Removed ghost edges (only draw if both endpoints exist)
+    const existingEdgeKeys = new Set(currentLinks.map(l => {
+      const s = l.source?.id || l.source;
+      const t = l.target?.id || l.target;
+      return `${s}->${t}`;
+    }));
+
+    const removedEdges = (diffStatus.removed_edges || []).filter(re => {
+      const key = `${re.source}->${re.target}`;
+      if (existingEdgeKeys.has(key)) return false;
+      return allNodeIds.has(re.source) && allNodeIds.has(re.target);
+    }).map(re => ({
+      source: re.source,
+      target: re.target,
+      _isGhostEdge: true,
+      diff_status: 'removed',
+      type: 'removed',
+    }));
+
+    return {
+      nodes: allNodes,
+      links: [...currentLinks, ...removedEdges],
+    };
+  }, [filteredGraph, diffMode, diffStatus, nodeVisibility]);
+
+  // ─── Added paths and edges sets ──────────────────────────────────────────────
   const diffNodeSet = useMemo(() => {
     if (!diffMode || !newPaths) return new Set();
     const set = new Set();
@@ -435,6 +726,91 @@ const GraphCanvas = ({ onNodeClick }) => {
     return set;
   }, [diffMode, newPaths]);
 
+  // ─── Weakened sink edges set ─────────────────────────────────────────────────
+  const weakenedSinkEdgeSet = useMemo(() => {
+    if (!diffMode || !diffStatus?.weakened) return new Set();
+    const weakenedIds = new Set(Object.keys(diffStatus.weakened));
+    const set = new Set();
+    const nodes = displayedGraph?.nodes || [];
+    const links = displayedGraph?.links || [];
+    const sinkIds = new Set(nodes.filter(n => String(n.type).toLowerCase() === 'sink').map(n => n.id));
+
+    links.forEach(l => {
+      const s = l.source?.id || l.source;
+      const t = l.target?.id || l.target;
+      if (weakenedIds.has(s) && sinkIds.has(t)) {
+        set.add(`${s}->${t}`);
+      }
+    });
+
+    if (set.size === 0) {
+      links.forEach(l => {
+        const s = l.source?.id || l.source;
+        const t = l.target?.id || l.target;
+        if (sinkIds.has(t) && (weakenedIds.has(s) || diffStatus.nodes?.[s] === 'weakened')) {
+          set.add(`${s}->${t}`);
+        }
+      });
+    }
+
+    return set;
+  }, [diffMode, diffStatus, displayedGraph]);
+
+  // ─── Diff Status Counts for Legend HUD ────────────────────────────────────────
+  const diffCounts = useMemo(() => {
+    if (!diffMode) return { added: 0, weakened: 0, removed: 0, touched: 0 };
+    let added = 0;
+    let weakened = 0;
+    let touched = 0;
+    let removed = diffStatus?.removed_nodes?.length || 0;
+
+    if (diffStatus?.nodes) {
+      Object.values(diffStatus.nodes).forEach(status => {
+        if (status === 'added') added++;
+        else if (status === 'weakened') weakened++;
+        else if (status === 'touched') touched++;
+      });
+    }
+
+    if (diffStatus?.weakened) {
+      weakened = Math.max(weakened, Object.keys(diffStatus.weakened).length);
+    }
+
+    if (added === 0 && newPaths?.length) {
+      const addedIds = new Set();
+      newPaths.forEach(p => {
+        if (Array.isArray(p)) p.forEach(id => addedIds.add(id));
+      });
+      added = addedIds.size;
+    }
+
+    return { added, weakened, removed, touched };
+  }, [diffMode, diffStatus, newPaths]);
+
+  // ─── Edge diff checkers ──────────────────────────────────────────────────────
+  const isAddedEdge = (link) => {
+    const s = link.source?.id || link.source;
+    const t = link.target?.id || link.target;
+    const key = `${s}->${t}`;
+    return (
+      link.diff_status === 'added' ||
+      diffStatus?.edges?.[key] === 'added' ||
+      diffLinkSet.has(key)
+    );
+  };
+
+  const isRemovedEdge = (link) => {
+    return link._isGhostEdge || link.diff_status === 'removed';
+  };
+
+  const isWeakenedSinkEdge = (link) => {
+    const s = link.source?.id || link.source;
+    const t = link.target?.id || link.target;
+    const key = `${s}->${t}`;
+    return weakenedSinkEdgeSet.has(key);
+  };
+
+  // ─── Resize Observer ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current) return;
     const observer = new ResizeObserver((entries) => {
@@ -449,13 +825,18 @@ const GraphCanvas = ({ onNodeClick }) => {
     return () => observer.disconnect();
   }, []);
 
+  // ─── Disposal on Diff Mode change or unmount ─────────────────────────────────
+  useEffect(() => {
+    return () => {
+      animatedObjectsRef.current.forEach(disposeThreeObject);
+      animatedObjectsRef.current = [];
+    };
+  }, [diffMode]);
+
+  // ─── Animation Loop (per-frame rotations and diff halo pulse) ────────────────
   useEffect(() => {
     let animId;
     let clock = 0;
-
-    console.log(`[GraphCanvas] 3D Animation loop initialized:
-- Node decoration animations (rotations, pulse scaling) run per-frame in requestAnimationFrame across ${animatedObjectsRef.current.length} objects.
-- Tooltip/Raycasting: nodeLabel is invoked by ForceGraph3D only on hover/raycast collision, NOT per animation frame.`);
 
     const animate = () => {
       clock += 0.02;
@@ -481,19 +862,17 @@ const GraphCanvas = ({ onNodeClick }) => {
           grp.userData.pathGlow.scale.set(glowPulse, glowPulse, glowPulse);
         }
 
-        if (grp.userData.redGlow) {
-          const glowPulse = 1 + Math.sin(clock * 4.0 + i) * 0.15;
-          grp.userData.redGlow.scale.set(glowPulse, glowPulse, glowPulse);
+        // Added node pulse: scale 1.0 to 1.25 with ~1.5s loop (freq ~4.19 rad/s)
+        if (grp.userData.addedHalo) {
+          const haloPulse = 1.0 + 0.125 * (1 + Math.sin(clock * 4.19 + i));
+          grp.userData.addedHalo.scale.set(haloPulse, haloPulse, haloPulse);
         }
-      }
 
-      frameCountRef.current++;
-      if (frameCountRef.current % 120 === 0) {
-        const now = performance.now();
-        const elapsed = now - lastFpsTimeRef.current;
-        const fps = Math.round((120 / elapsed) * 1000);
-        console.log(`[GraphCanvas] [PERF] Animation pulse loop: ~${fps} FPS | ${objs.length} node meshes being transformed per frame.`);
-        lastFpsTimeRef.current = now;
+        if (grp.userData.addedRing) {
+          const ringPulse = 1.0 + 0.125 * (1 + Math.sin(clock * 4.19 + i));
+          grp.userData.addedRing.scale.set(ringPulse, ringPulse, ringPulse);
+          grp.userData.addedRing.rotation.z += 0.012;
+        }
       }
 
       animId = requestAnimationFrame(animate);
@@ -506,7 +885,7 @@ const GraphCanvas = ({ onNodeClick }) => {
     return () => {
       if (animId) cancelAnimationFrame(animId);
     };
-  }, [viewMode, filteredGraph]);
+  }, [viewMode, displayedGraph]);
 
   const pathNodeSet = useMemo(() => new Set(path), [path]);
   const pathEdgeSet = useMemo(() => {
@@ -518,8 +897,8 @@ const GraphCanvas = ({ onNodeClick }) => {
   }, [path]);
 
   const stats = useMemo(() => {
-    const nodes = filteredGraph?.nodes || [];
-    const links = filteredGraph?.links || [];
+    const nodes = displayedGraph?.nodes || [];
+    const links = displayedGraph?.links || [];
     const sources = nodes.filter((n) => String(n.type).toLowerCase() === 'source').length;
     const sinks = nodes.filter((n) => String(n.type).toLowerCase() === 'sink').length;
     return {
@@ -528,7 +907,7 @@ const GraphCanvas = ({ onNodeClick }) => {
       sources,
       sinks,
     };
-  }, [filteredGraph]);
+  }, [displayedGraph]);
 
   useEffect(() => {
     if (graphRef.current) {
@@ -540,11 +919,28 @@ const GraphCanvas = ({ onNodeClick }) => {
     }
   }, [graph]);
 
-  const zoomTrigger = useStore((state) => state.zoomTrigger);
+  // ─── Camera Focus on Selected Node (Direction 2: DiffViewer badge click) ─────
   useEffect(() => {
-    if (!zoomTrigger || !graphRef.current || !path.length) return;
+    if (!selectedNode || !graphRef.current) return;
+    const targetId = typeof selectedNode === 'string' ? selectedNode : selectedNode.id;
+    const nodes = displayedGraph?.nodes || [];
+    const target = nodes.find(n => n.id === targetId);
+    if (target && target.x != null && target.y != null && target.z != null) {
+      try {
+        graphRef.current.cameraPosition(
+          { x: target.x, y: target.y - 15, z: target.z + 130 },
+          { x: target.x, y: target.y, z: target.z },
+          800
+        );
+      } catch (_) {}
+    }
+  }, [selectedNode, zoomTrigger, displayedGraph]);
 
-    const storeNodes = useStore.getState().graph.nodes;
+  // ─── Multi-path Zoom Fit ─────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!zoomTrigger || !graphRef.current || !path.length || selectedNode) return;
+
+    const storeNodes = useStore.getState().graph.nodes || [];
     const pathNodes  = path
       .map((id) => storeNodes.find((n) => n.id === id))
       .filter((n) => n && n.x != null);
@@ -566,14 +962,7 @@ const GraphCanvas = ({ onNodeClick }) => {
       { x: cx, y: cy,      z: cz },
       700
     );
-  }, [zoomTrigger, path]);
-
-  console.log(`[GraphCanvas] Passing to react-force-graph-3d:
-- Total Nodes: ${filteredGraph?.nodes?.length || 0}
-- Total Edges: ${filteredGraph?.links?.length || 0}
-- ForceGraph3D props: cooldownTicks=120, warmupTicks=0 (undefined / unconfigured)
-- linkThreeObject: undefined (standard Three.js line)
-- nodeThreeObject: custom buildNodeObject (allocates THREE.Group, Geometries, Materials, and SpriteText on every call without caching)`);
+  }, [zoomTrigger, path, selectedNode]);
 
   animatedObjectsRef.current = [];
 
@@ -596,56 +985,79 @@ const GraphCanvas = ({ onNodeClick }) => {
             ref={graphRef}
             width={size.width}
             height={size.height}
-            graphData={filteredGraph}
+            graphData={displayedGraph}
 
-            nodeLabel={(node) =>
-              `${node.label || node.id} · ${node.type || "node"} · line ${node.line || "?"}`
-            }
-            nodeThreeObject={(node) =>
-              buildNodeObject(node, pathNodeSet.has(node.id), animatedObjectsRef, diffMode, diffNodeSet.has(node.id))
-            }
+            nodeLabel={(node) => {
+              if (node._isGhost || node.diff_status === 'removed') {
+                return `[REMOVED] ${node.label || node.id} · ${node.type || "node"} (deleted in commit)`;
+              }
+              const status = diffMode ? getNodeDiffStatus(node, diffStatus, diffNodeSet) : null;
+              const prefix = status ? `[${status.toUpperCase()}] ` : '';
+              return `${prefix}${node.label || node.id} · ${node.type || "node"} · line ${node.line || "?"}`;
+            }}
+            nodeThreeObject={(node) => {
+              const diffStatusType = diffMode ? getNodeDiffStatus(node, diffStatus, diffNodeSet) : null;
+              const weakenedInfo = diffStatus?.weakened?.[node.id] || null;
+              return buildNodeObject(
+                node,
+                pathNodeSet.has(node.id),
+                animatedObjectsRef,
+                diffMode,
+                diffStatusType,
+                weakenedInfo
+              );
+            }}
             nodeThreeObjectExtend={false}
             onNodeClick={(node) => onNodeClick(node)}
             nodeVal={(node) => getNodeSize(node) / 2}
 
             linkCurvature={0.12}
             linkWidth={(link) => {
+              if (diffMode) {
+                if (isAddedEdge(link)) return 3.5;
+                if (isWeakenedSinkEdge(link)) return 3.0;
+                if (isRemovedEdge(link)) return 1.2;
+                return getEdgeStyle(link).width;
+              }
               const s = link.source?.id || link.source;
               const t = link.target?.id || link.target;
-              if (diffMode && diffLinkSet.has(`${s}->${t}`)) return 3;
               if (pathEdgeSet.has(`${s}->${t}`) || link.on_attack_path) return 3.5;
               return getEdgeStyle(link).width;
             }}
             linkColor={(link) => {
+              if (diffMode) {
+                if (isAddedEdge(link)) return '#FACC15';
+                if (isWeakenedSinkEdge(link)) return '#FB923C';
+                if (isRemovedEdge(link)) return '#FFFFFF';
+                return getEdgeStyle(link).color;
+              }
               const s = link.source?.id || link.source;
               const t = link.target?.id || link.target;
-              // Attack path override
-              if (diffMode && diffLinkSet.has(`${s}->${t}`)) return '#FF4444';
               if (pathEdgeSet.has(`${s}->${t}`) || link.on_attack_path) return 'rgba(239, 68, 68, 0.95)';
               if (link.patched) return '#374151';
-              // Edge type colour
               return getEdgeStyle(link).color;
             }}
             linkOpacity={(link) => {
               if (diffMode) {
-                const s = link.source?.id || link.source;
-                const t = link.target?.id || link.target;
-                return diffLinkSet.has(`${s}->${t}`) ? 1.0 : 0.1;
+                if (isAddedEdge(link)) return 1.0;
+                if (isWeakenedSinkEdge(link)) return 0.95;
+                if (isRemovedEdge(link)) return 0.35;
+                return 0.08; // Untouched edges noticeably dimmed
               }
               return getEdgeStyle(link).opacity;
             }}
 
             linkDirectionalParticles={(link) => {
+              if (diffMode) {
+                return isAddedEdge(link) ? 4 : 0;
+              }
               const s = link.source?.id || link.source;
               const t = link.target?.id || link.target;
-              if (diffMode) {
-                return diffLinkSet.has(`${s}->${t}`) ? 6 : 0;
-              }
               return pathEdgeSet.has(`${s}->${t}`) ? 6 : 0;
             }}
             linkDirectionalParticleWidth={3.0}
             linkDirectionalParticleColor={(link) => {
-              if (diffMode) return "#FF4444";
+              if (diffMode) return "#FACC15";
               return "#F59E0B";
             }}
             linkDirectionalArrowLength={4.5}
@@ -656,7 +1068,12 @@ const GraphCanvas = ({ onNodeClick }) => {
             cooldownTicks={120}
           />
 
-          <LegendHUD />
+          {diffMode ? (
+            <DiffLegendHUD counts={diffCounts} />
+          ) : (
+            <LegendHUD />
+          )}
+
           <ControlsHintHUD />
         </>
       )}
@@ -664,7 +1081,7 @@ const GraphCanvas = ({ onNodeClick }) => {
       {/* ── 2D SCHEMATIC VIEW ────────────────────────────────────────────── */}
       {viewMode === '2d' && (
         <SchematicView
-          graph={filteredGraph}
+          graph={displayedGraph}
           path={path}
           onNodeClick={onNodeClick}
           viewMode={viewMode}

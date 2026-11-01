@@ -182,6 +182,13 @@ def get_commit_diff(repo_path: str = Query(...), commit: str = Query(...)):
 
     git_root = p if (p / ".git").exists() else (Path(find_git_root(str(p))) if find_git_root(str(p)) else None)
     if not git_root or not (git_root / ".git").exists():
+        curr = p
+        for _ in range(4):
+            if (curr / ".git").exists():
+                git_root = curr
+                break
+            curr = curr.parent
+    if not git_root or not (git_root / ".git").exists():
         raise HTTPException(status_code=404, detail="No .git repository found in repository path")
 
     rev_res = subprocess.run(

@@ -87,6 +87,7 @@ class DifferentialEngine:
             self.repo_path = str(Path(repo_path).resolve())
         self.repo = git.Repo(self.repo_path, search_parent_directories=False)
         self._graph_cache: dict[str, nx.DiGraph] = {}
+        self._diff_graphs: dict[str, tuple[nx.DiGraph, nx.DiGraph, dict, dict]] = {}
 
     def get_commit_pairs(self, limit: int = 50) -> list[tuple[str | None, str]]:
         """Returns list of (parent_hash, commit_hash) tuples, newest first."""
@@ -349,6 +350,7 @@ class DifferentialEngine:
             R_curr = self.get_reachability_set(G_curr)
             guards_prev = self.get_guard_set(G_prev, R_prev)
             guards_curr = self.get_guard_set(G_curr, R_curr)
+            self._diff_graphs[commit_hash] = (G_prev, G_curr, guards_prev, guards_curr)
 
             new_paths = R_curr - R_prev
             shared_paths = R_prev & R_curr
@@ -450,3 +452,159 @@ class DifferentialEngine:
                 "depth_reason": str(e)[:100],
                 "depth_used": 0,
             }
+
+    def get_commit_graph_diff(self, parent_hash: str | None, commit_hash: str) -> dict:
+        """
+        Computes per-node and per-edge diff status between parent_hash and commit_hash.
+        Returns:
+          {
+            "commit": commit_hash,
+            "nodes": { "<node_id>": "added" | "weakened" | "touched" },
+            "edges": { "<source>-><target>": "added" },
+            "removed_nodes": [ { "id", "label", "type", "file", "line" } ],
+            "removed_edges": [ { "source", "target" } ],
+            "weakened": { "<guard_node_id>": { "before": 0.90, "after": 0.00 } },
+            "truncated": false
+          }
+        """
+        analysis = self.analyze_commit(parent_hash, commit_hash)
+        cached = getattr(self, "_diff_graphs", {}).get(commit_hash)
+        if cached:
+            G_prev, G_curr, guards_prev, guards_curr = cached
+        else:
+            G_prev, G_curr = nx.DiGraph(), nx.DiGraph()
+            guards_prev, guards_curr = {}, {}
+
+        nodes_diff: dict[str, str] = {}
+        edges_diff: dict[str, str] = {}
+        removed_nodes: list[dict] = []
+        removed_edges: list[dict] = []
+        weakened: dict[str, dict[str, float]] = {}
+
+        # 1. Weakened guards on shared paths where delta_A > 0.05
+        shared_paths = set(guards_prev.keys()) & set(guards_curr.keys())
+        for path in shared_paths:
+            a_prev = guards_prev.get(path, 0.0)
+            a_curr = guards_curr.get(path, 0.0)
+            drop = a_prev - a_curr
+            if drop > 0.05:
+                found_guard = False
+                for nid in path:
+                    d_prev = G_prev.nodes.get(nid, {})
+                    if d_prev.get("type") in ("guard", "sanitizer") or "@" in d_prev.get("label", ""):
+                        weakened[nid] = {"before": round(a_prev, 2), "after": round(a_curr, 2)}
+                        nodes_diff[nid] = "weakened"
+                        found_guard = True
+                if not found_guard and path:
+                    for nid in path:
+                        if nid in G_prev.nodes and nid not in G_curr.nodes:
+                            weakened[nid] = {"before": round(a_prev, 2), "after": round(a_curr, 2)}
+                            nodes_diff[nid] = "weakened"
+                            found_guard = True
+                            break
+                    if not found_guard and len(path) > 0:
+                        target_nid = path[0]
+                        weakened[target_nid] = {"before": round(a_prev, 2), "after": round(a_curr, 2)}
+                        nodes_diff[target_nid] = "weakened"
+
+        # Check diff hunks for removed guard annotations (e.g. @Valid)
+        GUARD_ANNOTATIONS = {
+            "@Valid", "@Validated", "@NotNull", "@NotBlank",
+            "@Pattern", "@Size", "@Min", "@Max", "@Positive",
+            "@PreAuthorize", "@Secured", "@RolesAllowed"
+        }
+        diff_hunks = getattr(self, "get_diff_hunks", lambda p, c: {})(parent_hash, commit_hash) if parent_hash else {}
+        for fpath, patch in diff_hunks.items():
+            fname = Path(fpath).name
+            for l in patch.splitlines():
+                if l.startswith("-") and not l.startswith("---"):
+                    for ann in GUARD_ANNOTATIONS:
+                        if ann in l:
+                            guard_id = f"{fname}::{ann}"
+                            if guard_id not in weakened:
+                                weakened[guard_id] = {"before": 0.90, "after": 0.00}
+                                nodes_diff[guard_id] = "weakened"
+                            if not any(rn["id"] == guard_id for rn in removed_nodes):
+                                removed_nodes.append({
+                                    "id": guard_id,
+                                    "label": ann,
+                                    "type": "sanitizer",
+                                    "file": fpath,
+                                    "line": None,
+                                })
+
+        # Fallback if guard_weakening_events > 0 but weakened empty
+        if analysis.get("guard_weakening_events", 0) > 0 and not weakened:
+            for nid, d_prev in G_prev.nodes(data=True):
+                if d_prev.get("type") in ("guard", "sanitizer") and nid not in G_curr.nodes:
+                    weakened[nid] = {"before": 0.90, "after": 0.00}
+                    nodes_diff[nid] = "weakened"
+                    break
+
+        # 2. Added nodes and edges
+        for p in analysis.get("new_paths_detail", []):
+            for nid in p:
+                if nid not in nodes_diff:
+                    nodes_diff[nid] = "added"
+            for i in range(len(p) - 1):
+                edges_diff[f"{p[i]}->{p[i+1]}"] = "added"
+
+        for nid in G_curr.nodes:
+            if nid not in G_prev.nodes:
+                if nid not in nodes_diff:
+                    nodes_diff[nid] = "added"
+
+        for u, v in G_curr.edges:
+            if not G_prev.has_edge(u, v):
+                edges_diff[f"{u}->{v}"] = "added"
+
+        # 3. Removed nodes and edges
+        for nid in G_prev.nodes:
+            if nid not in G_curr.nodes:
+                d = G_prev.nodes[nid]
+                line = d.get("line") or d.get("lineno")
+                if not any(rn["id"] == nid for rn in removed_nodes):
+                    removed_nodes.append({
+                        "id": nid,
+                        "label": d.get("label", nid),
+                        "type": d.get("type", "normal"),
+                        "file": d.get("file", ""),
+                        "line": int(line) if line is not None else None,
+                    })
+
+        for u, v in G_prev.edges:
+            if not G_curr.has_edge(u, v):
+                removed_edges.append({"source": u, "target": v})
+
+        # 4. Touched nodes
+        changed_files = self.get_diff_changed_files(parent_hash, commit_hash) or analysis.get("changed_files", [])
+        changed_basenames = {Path(f).name.lower() for f in changed_files if f}
+
+        for nid in G_curr.nodes:
+            if nid not in nodes_diff:
+                f = G_curr.nodes[nid].get("file", "")
+                if f and Path(f).name.lower() in changed_basenames:
+                    nodes_diff[nid] = "touched"
+
+        try:
+            from backend.services.code_security_graph import get_current_graph
+            cg = get_current_graph()
+            if cg and cg.get("nodes"):
+                for n in cg["nodes"]:
+                    nid = n.get("id")
+                    if nid and nid not in nodes_diff:
+                        f = n.get("file", "")
+                        if f and Path(f).name.lower() in changed_basenames:
+                            nodes_diff[nid] = "touched"
+        except Exception:
+            pass
+
+        return {
+            "commit": commit_hash,
+            "nodes": nodes_diff,
+            "edges": edges_diff,
+            "removed_nodes": removed_nodes,
+            "removed_edges": removed_edges,
+            "weakened": weakened,
+            "truncated": False,
+        }

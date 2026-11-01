@@ -22,6 +22,8 @@ export const endpoints = {
     `${API_BASE}/api/git/timeline?project_path=${encodeURIComponent(projectPath)}&filepath=${encodeURIComponent(filepath)}`,
   commitDiff: (commitHash, repoPath) =>
     `${API_BASE}/api/git/commit-diff?repo_path=${encodeURIComponent(repoPath)}&commit=${encodeURIComponent(commitHash)}`,
+  commitGraphDiff: (commitHash, repoPath) =>
+    `${API_BASE}/api/tdra/commit-graph-diff?repo_path=${encodeURIComponent(repoPath)}&commit=${encodeURIComponent(commitHash)}`,
   tdraAnalyze: `${API_BASE}/api/tdra/analyze`,
   tdraRiskSummary: (repoPath, limit = 20) => `${API_BASE}/api/tdra/risk-summary?repo_path=${encodeURIComponent(repoPath)}&limit=${limit}`,
   tdraCommit: (commitHash, repoPath) => `${API_BASE}/api/tdra/commit/${encodeURIComponent(commitHash)}?repo_path=${encodeURIComponent(repoPath)}`,
