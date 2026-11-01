@@ -1439,9 +1439,9 @@ function refreshRiskPanel() {
     const linesChanged = c.diff_lines_changed ? `+${c.diff_lines_changed}` : '';
 
     return `
-      <tr>
+      <tr class="commit-row" onclick="toggleCommitRow('${c.commit_hash}')" style="cursor:pointer">
         <td>
-          <a href="#" onclick="openCommitDiff('${c.commit_hash}')" style="color:#58A6FF;font-family:monospace">
+          <a href="#" onclick="event.stopPropagation(); openCommitDiff('${c.commit_hash}'); toggleCommitRow('${c.commit_hash}'); return false;" style="color:#58A6FF;font-family:monospace">
             ${shortHash}
           </a>
         </td>
@@ -1459,6 +1459,13 @@ function refreshRiskPanel() {
           ${newPaths > 0 ? `<span style="color:#FFA500">+${newPaths} path(s)</span> ` : ''}
           ${guardEvents > 0 ? `<span style="color:#FFD700">-${guardEvents} guard(s)</span> ` : ''}
           ${linesChanged}
+        </td>
+      </tr>
+      <tr id="diff-row-${c.commit_hash}" style="display:none;background:#0D1117">
+        <td colspan="6" style="padding:0;border-bottom:1px solid #30363D">
+          <div id="diff-container-${c.commit_hash}" style="padding:10px 14px;font-family:monospace;font-size:11px;color:#8B949E">
+            Loading commit diff...
+          </div>
         </td>
       </tr>
     `;
@@ -1718,6 +1725,27 @@ function refreshRiskPanel() {
     vscode.postMessage({ command: 'open3D' });
   }
 
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function toggleCommitRow(hash) {
+    const row = document.getElementById('diff-row-' + hash);
+    if (!row) return;
+    if (row.style.display === 'none') {
+      row.style.display = 'table-row';
+      openCommitDiff(hash);
+    } else {
+      row.style.display = 'none';
+    }
+  }
+
   function openCommitDiff(hash) {
     if (!hash.startsWith('parent')) {
       vscode.postMessage({ command: 'openCommitDiff', hash });
@@ -1726,6 +1754,73 @@ function refreshRiskPanel() {
 
   window.addEventListener('message', e => {
     const { type, data } = e.data;
+    if (type === 'commitDiffResult') {
+      const container = document.getElementById('diff-container-' + data.hash);
+      if (!container) return;
+      if (data.error) {
+        container.innerHTML = '<div style="color:#F85149;padding:6px 0">Failed to load diff: ' + escapeHtml(data.error) + '</div>';
+        return;
+      }
+      const diff = data.diff;
+      if (!diff || !diff.files || diff.files.length === 0) {
+        container.innerHTML = '<div style="color:#8B949E;padding:6px 0">No file diffs for this commit.</div>';
+        return;
+      }
+      let html = '<div style="margin-bottom:8px;font-size:11px;color:#8B949E;display:flex;gap:10px;align-items:center">' +
+        '<span>Files: <strong style="color:#E6EDF3">' + diff.files.length + '</strong></span>' +
+        (diff.truncated ? '<span style="color:#D29922">⚠️ Truncated at 2,000 lines</span>' : '') +
+      '</div>';
+
+      for (const file of diff.files) {
+        html += '<div style="background:#161B22;border:1px solid #21262D;border-radius:4px;margin-bottom:8px;overflow:hidden">' +
+          '<div style="padding:5px 8px;background:#21262D;font-weight:600;display:flex;justify-content:space-between;align-items:center">' +
+            '<span style="color:#E6EDF3">' + escapeHtml(file.path) + '</span>' +
+            '<span style="font-size:10px">' +
+              '<span style="color:#3FB950">+' + file.additions + '</span> <span style="color:#F85149">-' + file.deletions + '</span>' +
+            '</span>' +
+          '</div>';
+
+        if (file.status === 'binary') {
+          html += '<div style="padding:6px 8px;color:#8B949E;font-style:italic">Binary file</div>';
+        } else {
+          html += '<div style="overflow-x:auto;font-family:monospace;font-size:11px;line-height:18px">';
+          for (const hunk of (file.hunks || [])) {
+            html += '<div style="padding:2px 8px;background:#13161C;color:#8B949E;border-bottom:1px solid #21262D">' + escapeHtml(hunk.header) + '</div>';
+            for (const line of hunk.lines) {
+              const isAdd = line.type === 'add';
+              const isDel = line.type === 'del';
+              const bg = isAdd ? 'rgba(63,185,80,0.15)' : (isDel ? 'rgba(248,81,73,0.15)' : 'transparent');
+              const borderLeft = isAdd ? '3px solid #3FB950' : (isDel ? '3px solid #F85149' : '3px solid transparent');
+              const color = isAdd ? '#7EE787' : (isDel ? '#FFA198' : '#8B949E');
+              const prefix = isAdd ? '+' : (isDel ? '-' : ' ');
+
+              let badgesHtml = '';
+              if (line.marks && line.marks.length > 0) {
+                badgesHtml = '<span style="float:right;margin-left:8px">';
+                for (const m of line.marks) {
+                  const bLabel = m.toUpperCase().replace('_', ' ');
+                  const bColor = m === 'entry' ? '#3FB950' : (m === 'sink' ? '#F85149' : (m === 'guard' ? '#A371F7' : '#FF9500'));
+                  badgesHtml += '<span style="font-size:9px;padding:1px 4px;margin-left:4px;border-radius:2px;background:' + bColor + '22;color:' + bColor + ';border:1px solid ' + bColor + '">' + escapeHtml(bLabel) + '</span>';
+                }
+                badgesHtml += '</span>';
+              }
+
+              html += '<div style="display:flex;align-items:center;background:' + bg + ';border-left:' + borderLeft + ';white-space:pre">' +
+                '<span style="width:34px;text-align:right;color:#6E7681;padding-right:4px;user-select:none">' + (line.old_no != null ? line.old_no : '') + '</span>' +
+                '<span style="width:34px;text-align:right;color:#6E7681;padding-right:6px;user-select:none;border-right:1px solid #21262D">' + (line.new_no != null ? line.new_no : '') + '</span>' +
+                '<span style="width:14px;text-align:center;color:' + color + '">' + prefix + '</span>' +
+                '<span style="color:' + color + ';flex-grow:1">' + escapeHtml(line.text) + '</span>' +
+                badgesHtml +
+              '</div>';
+            }
+          }
+          html += '</div>';
+        }
+        html += '</div>';
+      }
+      container.innerHTML = html;
+      return;
+    }
     if (type === 'validationResult') {
       if (data.error && (!data.sample_sizes || data.sample_sizes.vcc === 0)) {
         document.getElementById('validation-result').innerHTML = \`
@@ -1849,6 +1944,13 @@ function openRiskPanel(context) {
         out.appendLine(`Commit: ${msg.hash}`);
         out.appendLine(`Inspect commit diff using VS Code Git extension or terminal: git show ${msg.hash}`);
         out.show();
+      }
+      try {
+        const repoPath = _currentGitRoot || _lastTimeline?.git_root || _currentRepoPath || _pinnedProjectPath || vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath || '.';
+        const diffData = await apiFetch(`${backendUrl}/api/git/commit-diff?repo_path=${encodeURIComponent(repoPath)}&commit=${encodeURIComponent(msg.hash)}`);
+        _riskPanel?.webview.postMessage({ type: 'commitDiffResult', data: { hash: msg.hash, diff: diffData } });
+      } catch (err) {
+        _riskPanel?.webview.postMessage({ type: 'commitDiffResult', data: { hash: msg.hash, error: err.message } });
       }
     }
   });

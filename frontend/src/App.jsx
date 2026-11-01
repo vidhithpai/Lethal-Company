@@ -23,11 +23,17 @@ const App = () => {
   const resetScanProgress = useStore((state) => state.resetScanProgress);
   
   const [explorerCollapsed, setExplorerCollapsed] = useState(false);
-  const [repoPath, setRepoPath] = useState("./demo_project");
+  const [repoPath, setRepoPath] = useState(() => localStorage.getItem("repo_path") || "./demo_project");
   const [highlightedPathIndex, setHighlightedPathIndex] = useState(null);
   const [attackPaths, setAttackPaths] = useState([]);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [panelTab, setPanelTab] = useState("node");
+
+  useEffect(() => {
+    if (repoPath) {
+      localStorage.setItem("repo_path", repoPath);
+    }
+  }, [repoPath]);
 
   useEffect(() => {
     fetch(endpoints.attackPaths)
@@ -265,4 +271,3 @@ const App = () => {
 };
 
 export default App;
-
