@@ -100,6 +100,360 @@ def read_communities():
         "summary": f"{len(groups)} communities detected."
     }
 
+CWE_CATALOG: dict[str, dict[str, str]] = {
+    "CWE-78": {
+        "name": "OS Command Injection",
+        "severity": "CRITICAL",
+        "description": "Executes operating system commands constructed from external input without proper sanitization.",
+        "attack_surface": "Attacker-controlled input reaches a system shell or process execution sink.",
+        "recommendation": "Use argument arrays rather than command strings (e.g. subprocess.run(['cmd', arg], shell=False)). Do not invoke system shell directly."
+    },
+    "CWE-89": {
+        "name": "SQL Injection",
+        "severity": "CRITICAL",
+        "description": "Constructs database queries using dynamic concatenation of untrusted input, permitting query manipulation.",
+        "attack_surface": "Data flows into database execution APIs without parameterization.",
+        "recommendation": "Use parameterized queries or prepared statements (e.g. cursor.execute('SELECT * FROM t WHERE id=?', (val,)))."
+    },
+    "CWE-95": {
+        "name": "Code Injection ('Eval Injection')",
+        "severity": "CRITICAL",
+        "description": "Passes dynamic code strings into a language interpreter (eval/exec) executed in the application context.",
+        "attack_surface": "Unvalidated input is evaluated directly as code.",
+        "recommendation": "Eliminate eval() and exec(). Use ast.literal_eval() or JSON parsing for structured data representations."
+    },
+    "CWE-94": {
+        "name": "Improper Control of Generation of Code ('Code Injection')",
+        "severity": "CRITICAL",
+        "description": "External input influences dynamically synthesized code or logic blocks.",
+        "attack_surface": "Input controls code compilation or script generation.",
+        "recommendation": "Refactor away from dynamic code generation. Use static mappings and strict whitelists."
+    },
+    "CWE-502": {
+        "name": "Deserialization of Untrusted Data",
+        "severity": "CRITICAL",
+        "description": "Deserializes untrusted byte streams without verification, permitting arbitrary object creation and remote code execution.",
+        "attack_surface": "Untrusted serialized data is passed to unverified deserializers (pickle, ObjectInputStream, unsafe yaml).",
+        "recommendation": "Do not deserialize untrusted data with pickle or ObjectInputStream. Use safe interchange formats like JSON."
+    },
+    "CWE-22": {
+        "name": "Path Traversal / Unsafe File Access",
+        "severity": "HIGH",
+        "description": "Uses external input to construct file paths without verifying they remain within intended directory boundaries.",
+        "attack_surface": "File system operations receive user-supplied filenames or relative path segments (e.g. ../).",
+        "recommendation": "Canonicalize paths using os.path.realpath() and verify that the target path begins with the allowed base directory."
+    },
+    "CWE-918": {
+        "name": "Server-Side Request Forgery (SSRF)",
+        "severity": "HIGH",
+        "description": "Initiates network requests to destinations derived from untrusted input, potentially exposing internal services or cloud metadata.",
+        "attack_surface": "HTTP or network client requests URLs controlled or influenced by external callers.",
+        "recommendation": "Validate request URLs against a strict domain whitelist and reject private IP ranges (127.0.0.1, 10.0.0.0/8, 169.254.169.254)."
+    },
+    "CWE-79": {
+        "name": "Cross-Site Scripting (XSS)",
+        "severity": "HIGH",
+        "description": "Outputs untrusted data to browser contexts without contextual sanitization or encoding.",
+        "attack_surface": "User data flows into HTTP responses or dynamic HTML rendering without encoding.",
+        "recommendation": "Contextually encode all user-supplied data (HTML, JavaScript, attribute encoding) before writing to response streams."
+    },
+    "CWE-611": {
+        "name": "XML External Entity (XXE) Injection",
+        "severity": "HIGH",
+        "description": "Parses untrusted XML documents with external entity resolution enabled.",
+        "attack_surface": "XML parsing pipelines process attacker-supplied schemas or entity definitions.",
+        "recommendation": "Disable external entity resolution (DTD resolution) in XML parsers or use defusedxml."
+    },
+    "CWE-1336": {
+        "name": "Server-Side Template Injection (SSTI)",
+        "severity": "CRITICAL",
+        "description": "Renders user input directly as template code rather than template data.",
+        "attack_surface": "Template engine evaluates expressions contained inside attacker-supplied strings.",
+        "recommendation": "Pass user values strictly as context variables to templates; do not render format strings directly."
+    },
+    "CWE-470": {
+        "name": "Use of Externally-Controlled Input to Select Classes or Code ('Unsafe Reflection')",
+        "severity": "HIGH",
+        "description": "Dynamically instantiates classes or invokes methods using untrusted class names or method identifiers.",
+        "attack_surface": "Reflection calls (Class.forName, Method.invoke) resolve targets directly from inputs.",
+        "recommendation": "Use a closed whitelist map to look up permitted classes and methods."
+    },
+    "CWE-20": {
+        "name": "Improper Input Validation (Generic - unmapped)",
+        "severity": "MEDIUM",
+        "description": "Operation receives input without verifying conformance against expected formats, types, or boundary limits.",
+        "attack_surface": "Data is processed without formal schema or pattern validation.",
+        "recommendation": "Implement strict input validation schemas, type checking, and sanitization boundaries."
+    }
+}
+
+
+def infer_node_cwe(node_data: dict) -> tuple[str, str]:
+    cwe = node_data.get("cwe")
+    cwe_name = node_data.get("cwe_name")
+    if cwe and cwe in CWE_CATALOG:
+        return cwe, cwe_name or CWE_CATALOG[cwe]["name"]
+
+    sink_kind = node_data.get("sink_kind")
+    if sink_kind:
+        kind_map = {
+            "cmd_execution": ("CWE-78", "OS Command Injection"),
+            "eval_exec": ("CWE-95", "Code Injection ('Eval Injection')"),
+            "sql_execution": ("CWE-89", "SQL Injection"),
+            "deserialization": ("CWE-502", "Deserialization of Untrusted Data"),
+            "file_write": ("CWE-22", "Path Traversal / Unsafe File Write"),
+            "ssrf": ("CWE-918", "Server-Side Request Forgery (SSRF)"),
+            "ssti": ("CWE-1336", "Server-Side Template Injection (SSTI)"),
+        }
+        if sink_kind in kind_map:
+            return kind_map[sink_kind]
+
+    label = (node_data.get("label") or node_data.get("id") or "").lower()
+    if any(k in label for k in ("subprocess", "os.system", "popen", "processbuilder", "runtime.exec", "system(")):
+        if "eval(" not in label and "exec(" not in label:
+            return "CWE-78", "OS Command Injection"
+    if any(k in label for k in ("eval(", "exec(", "eval_exec", "eval")):
+        return "CWE-95", "Code Injection ('Eval Injection')"
+    if any(k in label for k in ("execute(", "executequery", "executeupdate", "createquery", "createnativequery", "sql")):
+        return "CWE-89", "SQL Injection"
+    if any(k in label for k in ("pickle", "yaml.load", "objectinputstream", "readobject", "deserialize")):
+        return "CWE-502", "Deserialization of Untrusted Data"
+    if any(k in label for k in ("open(", "write_text", "write_bytes", "filewriter", "files.write", "rmtree", "path")):
+        return "CWE-22", "Path Traversal / Unsafe File Write"
+    if any(k in label for k in ("requests.", "httpx.", "urlopen", "ssrf")):
+        return "CWE-918", "Server-Side Request Forgery (SSRF)"
+    if any(k in label for k in ("render_template_string", "ssti")):
+        return "CWE-1336", "Server-Side Template Injection (SSTI)"
+    if any(k in label for k in ("response.getwriter", "xss")):
+        return "CWE-79", "Cross-Site Scripting (XSS)"
+    if any(k in label for k in ("forname", "method.invoke", "reflection")):
+        return "CWE-470", "Use of Externally-Controlled Input to Select Classes or Code ('Unsafe Reflection')"
+
+    return "CWE-20", "Improper Input Validation (Generic - unmapped)"
+
+
+def build_node_analysis(
+    node_id: str,
+    node_data: dict,
+    g: nx.DiGraph,
+    upstream_sources: list[dict],
+    downstream_sinks: list[dict],
+    paths_through: list[dict]
+) -> dict:
+    node_type = str(node_data.get("type", "normal")).lower()
+    filepath = node_data.get("file", "")
+    fname = Path(filepath).name if filepath else "unknown"
+    line = node_data.get("line", 1)
+    label = node_data.get("label") or node_id
+
+    # SINK NODE
+    if node_type == "sink":
+        primary_cwe, primary_name = infer_node_cwe(node_data)
+        catalog_entry = CWE_CATALOG.get(primary_cwe, CWE_CATALOG["CWE-20"])
+        cwes = [{"cwe": primary_cwe, "name": primary_name, "role": "sink"}]
+        severity = catalog_entry.get("severity", "HIGH")
+        what_it_does = f"Dangerous execution sink '{label}' at {fname}:{line}. {catalog_entry['description']}"
+
+        path_sample = ""
+        if paths_through:
+            sample_p = paths_through[0].get("path", [])
+            labels = [g.nodes[x].get("label", x) for x in sample_p if x in g]
+            if labels:
+                path_sample = " → ".join(labels[:4])
+                if len(labels) > 4:
+                    path_sample += f" → ... → {labels[-1]}"
+
+        if path_sample:
+            root_cause = f"Reachable along attack corridor: {path_sample}. Taint flows into this sink without required sanitization."
+        elif upstream_sources:
+            src_names = ", ".join(s["label"] for s in upstream_sources[:3])
+            root_cause = f"Reachable from user-controlled input source(s): {src_names}."
+        else:
+            root_cause = catalog_entry["attack_surface"]
+
+        fix = catalog_entry["recommendation"]
+
+    # SOURCE NODE (e.g. os.getenv, request.args)
+    elif node_type == "source":
+        sink_cwes = []
+        seen_cwes = set()
+        for s in downstream_sinks:
+            sid = s["id"]
+            sdata = g.nodes.get(sid, {})
+            scwe, sname = infer_node_cwe(sdata)
+            if scwe not in seen_cwes:
+                seen_cwes.add(scwe)
+                sink_cwes.append({
+                    "cwe": scwe,
+                    "name": sname,
+                    "sink": s.get("label", sid),
+                    "role": "downstream_sink",
+                    "severity": CWE_CATALOG.get(scwe, {}).get("severity", "HIGH")
+                })
+
+        if sink_cwes:
+            sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+            sink_cwes.sort(key=lambda x: sev_order.get(x["severity"], 99))
+            primary_cwe = sink_cwes[0]["cwe"]
+            primary_name = sink_cwes[0]["name"]
+            severity = sink_cwes[0]["severity"]
+            cwe_list_str = ", ".join(f"{c['cwe']} ({c['name']})" for c in sink_cwes)
+
+            what_it_does = f"Untrusted input origin '{label}' at {fname}:{line}. This node introduces external user-controlled data into the application."
+
+            path_sample = ""
+            if paths_through:
+                sample_p = paths_through[0].get("path", [])
+                labels = [g.nodes[x].get("label", x) for x in sample_p if x in g]
+                if labels:
+                    path_sample = " → ".join(labels[:4])
+                    if len(labels) > 4:
+                        path_sample += f" → ... → {labels[-1]}"
+
+            if path_sample:
+                root_cause = f"Taint origin propagates along attack corridor: {path_sample}. Reaches downstream sink(s) vulnerable to {cwe_list_str}."
+            else:
+                sink_names = ", ".join(f"{s['label']}" for s in downstream_sinks[:3])
+                root_cause = f"Taint flows from this input into downstream sink(s): {sink_names}. Threat exposure includes {cwe_list_str}."
+
+            fix = f"Validate and sanitize all data received from '{label}' at this entry point before propagation. Enforce strict boundaries for downstream {primary_cwe} sinks."
+            cwes = sink_cwes
+        else:
+            # Check if source or its outgoing variable names indicate target vulnerability class
+            target_cwes = []
+            try:
+                for succ in g.successors(node_id):
+                    succ_label = (g.nodes[succ].get("label") or succ).lower()
+                    if any(k in succ_label for k in ("database", "db", "sql", "query")):
+                        target_cwes.append(("CWE-89", "SQL Injection (Database Configuration)"))
+                    elif any(k in succ_label for k in ("cmd", "command", "shell", "exec")):
+                        target_cwes.append(("CWE-78", "OS Command Injection"))
+                    elif any(k in succ_label for k in ("path", "file", "filename", "dir")):
+                        target_cwes.append(("CWE-22", "Path Traversal / Unsafe File Access"))
+                    elif any(k in succ_label for k in ("url", "host", "endpoint")):
+                        target_cwes.append(("CWE-918", "Server-Side Request Forgery (SSRF)"))
+            except Exception:
+                pass
+
+            if target_cwes:
+                primary_cwe, primary_name = target_cwes[0]
+                severity = CWE_CATALOG.get(primary_cwe, {}).get("severity", "HIGH")
+                what_it_does = f"External input origin '{label}' at {fname}:{line}. Introduces external environment data into {primary_name.lower()} operations."
+                root_cause = f"Taint flows from this source into downstream variable(s) configuring {primary_name}."
+                fix = f"Validate and strictly sanitize all values received from '{label}' before propagation into {primary_cwe} sinks."
+                cwes = [{"cwe": primary_cwe, "name": primary_name, "role": "source", "severity": severity}]
+            else:
+                primary_cwe = ""
+                primary_name = "External Input Origin (Unlinked)"
+                severity = "LOW"
+                what_it_does = f"External input origin '{label}' at {fname}:{line}. Introduces external environment data into the runtime."
+                root_cause = "Entry source detected. Currently no complete taint path reaches a classified execution sink in this module."
+                fix = f"Ensure strict schema validation and type constraints on data returned by '{label}'."
+                cwes = []
+
+    # SANITIZER / GUARD NODE
+    elif node_type in ("sanitizer", "guard"):
+        sink_cwes = []
+        seen_cwes = set()
+        for s in downstream_sinks:
+            sid = s["id"]
+            sdata = g.nodes.get(sid, {})
+            scwe, sname = infer_node_cwe(sdata)
+            if scwe not in seen_cwes:
+                seen_cwes.add(scwe)
+                sink_cwes.append({
+                    "cwe": scwe,
+                    "name": sname,
+                    "sink": s.get("label", sid),
+                    "role": "protected_sink",
+                    "severity": CWE_CATALOG.get(scwe, {}).get("severity", "HIGH")
+                })
+
+        if sink_cwes:
+            primary_cwe = sink_cwes[0]["cwe"]
+            primary_name = sink_cwes[0]["name"]
+            cwe_list_str = ", ".join(f"{c['cwe']} ({c['name']})" for c in sink_cwes)
+            what_it_does = f"Security guard / sanitizer '{label}' at {fname}:{line}. Mitigates taint flow toward downstream execution sinks."
+            root_cause = f"Positioned along taint corridor protecting against {cwe_list_str}."
+            fix = f"Verify that validation logic in '{label}' comprehensively covers all canonicalization, encoding, and delimiter bypasses for {primary_cwe}."
+            cwes = sink_cwes
+            severity = "LOW"
+        else:
+            primary_cwe = "CWE-20"
+            primary_name = "Improper Input Validation (Generic - unmapped)"
+            what_it_does = f"Sanitizer routine '{label}' at {fname}:{line} designed to validate or neutralize untrusted data."
+            root_cause = "Sanitization point detected along execution path."
+            fix = "Ensure validation regex or checks reject non-conforming characters and edge cases."
+            cwes = [{"cwe": primary_cwe, "name": primary_name, "role": "sanitizer"}]
+            severity = "LOW"
+
+    # INTERMEDIATE / FUNCTION / NORMAL
+    else:
+        sink_cwes = []
+        seen_cwes = set()
+        for s in downstream_sinks:
+            sid = s["id"]
+            sdata = g.nodes.get(sid, {})
+            scwe, sname = infer_node_cwe(sdata)
+            if scwe not in seen_cwes:
+                seen_cwes.add(scwe)
+                sink_cwes.append({
+                    "cwe": scwe,
+                    "name": sname,
+                    "sink": s.get("label", sid),
+                    "role": "downstream_sink",
+                    "severity": CWE_CATALOG.get(scwe, {}).get("severity", "MEDIUM")
+                })
+
+        if sink_cwes:
+            sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+            sink_cwes.sort(key=lambda x: sev_order.get(x["severity"], 99))
+            primary_cwe = sink_cwes[0]["cwe"]
+            primary_name = sink_cwes[0]["name"]
+            severity = sink_cwes[0]["severity"]
+            cwe_list_str = ", ".join(f"{c['cwe']} ({c['name']})" for c in sink_cwes)
+
+            what_it_does = f"Intermediate data-flow node '{label}' at {fname}:{line}. Propagates tainted variables or calls between functions."
+
+            path_sample = ""
+            if paths_through:
+                sample_p = paths_through[0].get("path", [])
+                labels = [g.nodes[x].get("label", x) for x in sample_p if x in g]
+                if labels:
+                    path_sample = " → ".join(labels[:4])
+                    if len(labels) > 4:
+                        path_sample += f" → ... → {labels[-1]}"
+
+            if path_sample:
+                root_cause = f"Part of taint propagation path: {path_sample}. Propagates data toward {cwe_list_str}."
+            else:
+                root_cause = f"Transfers tainted state toward downstream sink(s) exposed to {cwe_list_str}."
+
+            fix = f"Apply defensive input sanitization prior to this step or ensure valid sanitizers intervene before reaching downstream {primary_cwe} sinks."
+            cwes = sink_cwes
+        else:
+            primary_cwe = ""
+            primary_name = "Benign / No Direct Attack Path"
+            severity = "LOW"
+            what_it_does = f"Application execution node '{label}' at {fname}:{line}."
+            root_cause = "Internal logic node without active attack corridor to a classified execution sink."
+            fix = "No immediate vulnerability remediation required. Standard coding hygiene applies."
+            cwes = []
+
+    vuln_title = f"{primary_cwe}: {primary_name}" if primary_cwe else primary_name
+    return {
+        "cwe": primary_cwe or "None",
+        "cwe_name": primary_name,
+        "vuln_type": vuln_title,
+        "cwes": cwes,
+        "what_it_does": what_it_does,
+        "root_cause": root_cause,
+        "fix": fix,
+        "severity": severity,
+        "role": node_type
+    }
+
+
 @router.get("/api/node/context")
 def read_node_context(node_id: str):
     built = get_security_graph()
@@ -157,6 +511,21 @@ def read_node_context(node_id: str):
     all_paths = compute_attack_paths(limit=500, max_depth=14)
     paths_through = [p for p in all_paths if node_id in p.get("path", [])]
 
+    # Include any sinks identified at the end of matching attack paths
+    seen_sink_ids = {s["id"] for s in downstream_sinks}
+    for p in paths_through:
+        p_nodes = p.get("path", [])
+        if p_nodes:
+            last_n = p_nodes[-1]
+            if last_n in g and last_n not in seen_sink_ids:
+                seen_sink_ids.add(last_n)
+                downstream_sinks.append({
+                    "id": last_n,
+                    "label": g.nodes[last_n].get("label", last_n),
+                    "risk": g.nodes[last_n].get("risk", "HIGH"),
+                    "cwe": p.get("cwe")
+                })
+
     blast_radius = node_data.get("blast_radius", {})
     if not isinstance(blast_radius, dict) and "files_in_commit" not in blast_radius:
         blist = node_data.get("blast_radius", [])
@@ -168,6 +537,8 @@ def read_node_context(node_id: str):
             }
         else:
             blast_radius = {"files_in_commit": [], "count": 0, "description": "No git blame data"}
+
+    analysis = build_node_analysis(node_id, node_data, g, upstream_sources, downstream_sinks, paths_through)
 
     return {
         "node_id": node_id,
@@ -186,7 +557,8 @@ def read_node_context(node_id: str):
         },
         "attack_paths_through": paths_through,
         "sanitizers_on_path": [],
-        "blast_radius": blast_radius
+        "blast_radius": blast_radius,
+        "analysis": analysis
     }
 
 @router.get("/api/node/patch-impact")

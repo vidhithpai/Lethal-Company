@@ -31,6 +31,15 @@ function EvidenceCard({ source, index }) {
   );
 }
 
+const getSeverityColor = (sev) => {
+  const s = String(sev || "").toUpperCase();
+  if (s.includes("CRIT")) return "#EF4444";
+  if (s.includes("HIGH")) return "#F87171";
+  if (s.includes("MED")) return "#F59E0B";
+  if (s.includes("LOW") || s.includes("INFO") || s.includes("CLEAN")) return "#10B981";
+  return "#60A5FA";
+};
+
 export default function UnifiedPanel({
   selectedNode, attackPath, attackPaths, onPatch, onHighlightPath, onSelectNode, externalTab
 }) {
@@ -56,29 +65,35 @@ export default function UnifiedPanel({
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
   const chatEndRef = useRef(null);
 
+  const activeAnalysis = nodeAnalysis || nodeContext?.analysis;
   const graph = useStore((state) => state.graph);
 
   // Auto-fetch node context
   useEffect(() => {
     if (selectedNode) {
       setActiveTab("node");
+      setNodeAnalysis(null);
       fetch(`${API_BASE}/api/node/context?node_id=${encodeURIComponent(selectedNode.id)}`)
         .then(r => r.json())
-        .then(setNodeContext)
+        .then(d => {
+          setNodeContext(d);
+          if (d?.analysis) {
+            setNodeAnalysis(prev => ({ ...d.analysis, ...(prev || {}) }));
+          }
+        })
         .catch(() => setNodeContext(null));
     }
   }, [selectedNode?.id]);
 
   useEffect(() => {
-    if (!selectedNode || !["sink", "source"].includes(selectedNode.type)) {
+    if (!selectedNode) {
       setNodeAnalysis(null);
       return;
     }
     let cancelled = false;
     setLoadingAnalysis(true);
-    setNodeAnalysis(null);
 
-    fetch(`${API_BASE}/api/query/explain-node`, {
+    fetch(`${API_BASE}/api/query/explain-node?node_id=${encodeURIComponent(selectedNode.id)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -92,7 +107,11 @@ export default function UnifiedPanel({
       }),
     })
       .then((r) => r.json())
-      .then((d) => { if (!cancelled) setNodeAnalysis(d); })
+      .then((d) => {
+        if (!cancelled && d) {
+          setNodeAnalysis(prev => ({ ...(prev || {}), ...d }));
+        }
+      })
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoadingAnalysis(false); });
 
@@ -290,29 +309,79 @@ export default function UnifiedPanel({
 
                 {/* ⚠️ AI VULNERABILITY ANALYSIS */}
                 <div className="intel-card">
-                  <div className="intel-card-header">⚠️ AI VULNERABILITY ANALYSIS</div>
-                  {loadingAnalysis ? (
+                  <div className="intel-card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span>⚠️ AI VULNERABILITY ANALYSIS</span>
+                    {activeAnalysis?.severity && (
+                      <span
+                        style={{
+                          fontSize: 9,
+                          fontWeight: 800,
+                          padding: "1px 6px",
+                          borderRadius: 3,
+                          textTransform: "uppercase",
+                          letterSpacing: 0.5,
+                          background: `${getSeverityColor(activeAnalysis.severity)}22`,
+                          color: getSeverityColor(activeAnalysis.severity),
+                          border: `1px solid ${getSeverityColor(activeAnalysis.severity)}66`
+                        }}
+                      >
+                        {activeAnalysis.severity}
+                      </span>
+                    )}
+                  </div>
+                  {loadingAnalysis && !activeAnalysis ? (
                     <div style={{ fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>Running taint analysis...</div>
                   ) : (
                     <>
-                      <div className="cwe-title-text">
-                        {nodeAnalysis?.vuln_type || "CWE-20: Improper Input Validation"}
+                      <div
+                        className="cwe-title-text"
+                        style={{ color: getSeverityColor(activeAnalysis?.severity || selectedNode?.risk) }}
+                      >
+                        {activeAnalysis?.vuln_type || (selectedNode?.label ? `Analysis: ${selectedNode.label}` : "Node Analysis")}
                       </div>
+
+                      {Array.isArray(activeAnalysis?.cwes) && activeAnalysis.cwes.length > 1 && (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, margin: "6px 0 8px" }}>
+                          {activeAnalysis.cwes.map((c, idx) => {
+                            const badgeColor = getSeverityColor(c.severity || activeAnalysis?.severity);
+                            return (
+                              <span
+                                key={idx}
+                                title={`${c.cwe}: ${c.name}${c.sink ? ` (reaches ${c.sink})` : ""}`}
+                                style={{
+                                  fontSize: 9.5,
+                                  fontWeight: 700,
+                                  fontFamily: "'JetBrains Mono', monospace",
+                                  padding: "1px 5px",
+                                  borderRadius: 3,
+                                  background: `${badgeColor}18`,
+                                  color: badgeColor,
+                                  border: `1px solid ${badgeColor}44`,
+                                  cursor: "default"
+                                }}
+                              >
+                                {c.cwe}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+
                       <div className="cwe-desc-text">
-                        {nodeAnalysis?.what_it_does || "This node performs an operation that may be dangerous if it receives attacker-controlled input."}
+                        {activeAnalysis?.what_it_does || (activeAnalysis ? "Analyzing node role and data flow..." : "No behavior details available for this node.")}
                       </div>
 
                       <div style={{ marginBottom: 10 }}>
                         <div style={{ fontSize: 9.5, fontWeight: 800, color: "var(--text-muted)", letterSpacing: 0.5, marginBottom: 2 }}>ATTACK SURFACE</div>
                         <div className="rec-text">
-                          {nodeAnalysis?.root_cause || "Taint analysis detected this node on a path from a user-controlled source."}
+                          {activeAnalysis?.root_cause || "Taint flow inspection active."}
                         </div>
                       </div>
 
                       <div className="recommendation-box">
                         <div className="rec-title">☑ RECOMMENDATION</div>
                         <div className="rec-text">
-                          {nodeAnalysis?.fix || "Validate all inputs reaching this operation and ensure sanitizers are present on every path."}
+                          {activeAnalysis?.fix || "Validate inputs reaching this operation and verify sanitizers on attack corridors."}
                         </div>
                       </div>
                     </>

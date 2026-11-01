@@ -350,10 +350,14 @@ async def scan_upload(
             content = await f.read()
             out.write_bytes(content)
 
-        # Determine effective project root
+        # Determine effective project root: only descend if base contains ONLY the single subdirectory safe_name and no other project files
         target_dir = base
-        if (base / safe_name).is_dir() and any((base / safe_name).iterdir()):
-            target_dir = base / safe_name
+        try:
+            children = [c for c in base.iterdir() if not c.name.startswith(".")]
+            if len(children) == 1 and children[0].is_dir() and children[0].name == safe_name:
+                target_dir = children[0]
+        except Exception:
+            target_dir = base
 
         language = detect_project_language(str(target_dir))
         if language == "java":

@@ -324,6 +324,13 @@ def _is_sink_call(call: ast.Call) -> tuple[bool, str, float, str, dict[str, Any]
     if qn in {"shutil.rmtree", "shutil.move"}:
         return True, f"{qn}(...)", 7.5, "file_write", {}
 
+    if qn in {
+        "dj_database_url.parse", "dj_database_url.config",
+        "sqlite3.connect", "psycopg2.connect", "mysql.connector.connect",
+        "sqlalchemy.create_engine"
+    } or qn.endswith(".connect"):
+        return True, f"{qn}(...)", 8.0, "sql_execution", {}
+
     if qn.endswith(".execute"):
         if len(call.args) >= 2:
             return True, f"{qn}(...) [parameterized]", 3.0, "sql_execution", {}

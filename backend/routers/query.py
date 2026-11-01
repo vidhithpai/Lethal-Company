@@ -149,8 +149,93 @@ def _rule_based_answer(query: str, docs: list[dict], intents: list[str]) -> str:
         return f"TDRA finding: {top['text'][:400]}"
 
 
+class ExplainNodeRequest(BaseModel):
+    node_id: Optional[str] = None
+    query: Optional[str] = "explain this vulnerability"
+    label: Optional[str] = None
+    node_type: Optional[str] = None
+    severity: Optional[float] = None
+    risk: Optional[str] = None
+    file: Optional[str] = None
+    line: Optional[int] = None
+
+
 @router.post("/explain-node")
-def explain_node(node_id: str, query: str = "explain this vulnerability"):
-    """Explain a specific node selected in the graph."""
-    enriched_query = f"Explain the security implications of node '{node_id}'. {query}"
-    return ask_query(QueryRequest(query=enriched_query))
+def explain_node(
+    req: Optional[ExplainNodeRequest] = None,
+    node_id: Optional[str] = None,
+    query: Optional[str] = "explain this vulnerability"
+):
+    """Explain a specific node selected in the graph with real CWE context."""
+    target_id = (req.node_id if req and req.node_id else node_id) or ""
+    user_query = (req.query if req and req.query else query) or "explain this vulnerability"
+
+    from backend.routers.security import read_node_context
+    try:
+        ctx = read_node_context(target_id)
+    except Exception:
+        ctx = {}
+
+    analysis = ctx.get("analysis", {})
+    cwe_id = analysis.get("cwe", "CWE-20")
+    cwe_name = analysis.get("cwe_name", "Improper Input Validation")
+    role = analysis.get("role", req.node_type if req and req.node_type else "node")
+    node_label = req.label if (req and req.label) else ctx.get("node", {}).get("label", target_id)
+
+    # Cache key includes node id + CWE + query
+    cache_key = f"{target_id}::{cwe_id}::{user_query}"
+    if cache_key in ai_query_cache:
+        cached = ai_query_cache[cache_key]
+        return {
+            **analysis,
+            "explanation": cached.get("explanation", ""),
+            "action": cached.get("action"),
+            "structured": cached.get("structured"),
+            "source": "cache"
+        }
+
+    explanation = ""
+    if AI_AVAILABLE and _groq_client:
+        try:
+            prompt = (
+                f"You are a forensic application security engineer analyzing a {role.upper()} node in a taint analysis graph.\n"
+                f"Node ID: {target_id}\n"
+                f"Label: {node_label}\n"
+                f"Classification: {cwe_id} - {cwe_name}\n"
+                f"Role: {role}\n"
+                f"Summary: {analysis.get('what_it_does', '')}\n"
+                f"Attack Surface: {analysis.get('root_cause', '')}\n"
+                f"Fix: {analysis.get('fix', '')}\n\n"
+                f"User question: {user_query}\n"
+                f"Explain concisely the security role of this node, how taint reaches or leaves it, and actionable remediation."
+            )
+            response = _groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": "You are a specialized SAST forensic analyzer. Explain vulnerabilities using the exact provided CWE and attack paths without defaulting to CWE-20."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=400,
+                temperature=0.1
+            )
+            explanation = response.choices[0].message.content.strip()
+        except Exception as e:
+            explanation = f"Analysis for {cwe_id} ({cwe_name}): {analysis.get('what_it_does', '')} {analysis.get('root_cause', '')}"
+    else:
+        explanation = f"Analysis for {cwe_id} ({cwe_name}): {analysis.get('what_it_does', '')} {analysis.get('root_cause', '')}"
+
+    result = {
+        "node_id": target_id,
+        "vuln_type": analysis.get("vuln_type", f"{cwe_id}: {cwe_name}"),
+        "cwe": cwe_id,
+        "cwe_name": cwe_name,
+        "cwes": analysis.get("cwes", []),
+        "what_it_does": analysis.get("what_it_does", ""),
+        "root_cause": analysis.get("root_cause", ""),
+        "fix": analysis.get("fix", ""),
+        "severity": analysis.get("severity", "HIGH"),
+        "role": role,
+        "explanation": explanation
+    }
+    ai_query_cache[cache_key] = {"explanation": explanation, "structured": result}
+    return result
