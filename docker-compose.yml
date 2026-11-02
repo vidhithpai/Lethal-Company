@@ -13,11 +13,11 @@ services:
       - ./demo_project:/app/demo_project:ro
       - ./sample_project:/app/sample_project:ro
 
-      # Mount Windows drives (read-only)
-      - C:/:/host/c:ro
-      - D:/:/host/d:ro
-      - E:/:/host/e:ro
-      - F:/:/host/f:ro
+      # Mount Windows drives (read-only) - enable only on Windows hosts
+      # - C:/:/host/c:ro
+      # - D:/:/host/d:ro
+      # - E:/:/host/e:ro
+      # - F:/:/host/f:ro
 
   frontend:
     build:
