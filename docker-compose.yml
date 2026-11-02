@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.backend
+      network: host
     container_name: vulngraph-backend
     ports:
       - "8001:8001"
@@ -14,15 +15,16 @@ services:
       - ./sample_project:/app/sample_project:ro
 
       # Mount Windows drives (read-only)
-      - C:/:/host/c:ro
-      - D:/:/host/d:ro
-      - E:/:/host/e:ro
-      - F:/:/host/f:ro
+      - /mnt/c:/host/c:ro
+      - /mnt/d:/host/d:ro
+      - /mnt/e:/host/e:ro
+      - /mnt/f:/host/f:ro
 
   frontend:
     build:
       context: .
       dockerfile: docker/Dockerfile.frontend
+      network: host
       args:
         VITE_API_URL: http://localhost:8001
     container_name: vulngraph-frontend

@@ -1,0 +1,45 @@
+{
+  "version": "1.0",
+  "project_path": "D:\\Sushrutha\\FusionX\\Lethal-Company\\sample_project",
+  "last_full_scan": "2026-09-07T09:39:06.728260",
+  "files": {
+    "D:\\Sushrutha\\FusionX\\Lethal-Company\\sample_project\\dvja\\controllers\\ApiAction.java": {
+      "hash": "350d986ed420f6e6",
+      "analyzed_at": "2026-09-07T09:39:06.728260"
+    },
+    "D:\\Sushrutha\\FusionX\\Lethal-Company\\sample_project\\dvja\\controllers\\BaseController.java": {
+      "hash": "6d75a582f130e21b",
+      "analyzed_at": "2026-09-07T09:39:06.728260"
+    },
+    "D:\\Sushrutha\\FusionX\\Lethal-Company\\sample_project\\dvja\\controllers\\Home.java": {
+      "hash": "1a5fc00cf61019c3",
+      "analyzed_at": "2026-09-07T09:39:06.728260"
+    },
+    "D:\\Sushrutha\\FusionX\\Lethal-Company\\sample_project\\dvja\\controllers\\Login.java": {
+      "hash": "564dd1cd66ecf474",
+      "analyzed_at": "2026-09-07T09:39:06.728260"
+    },
+    "D:\\Sushrutha\\FusionX\\Lethal-Company\\sample_project\\dvja\\controllers\\PingAction.java": {
+      "hash": "09a01cccd8843a66",
+      "analyzed_at": "2026-09-07T09:39:06.728260"
+    },
+    "D:\\Sushrutha\\FusionX\\Lethal-Company\\sample_project\\dvja\\controllers\\ProductAction.java": {
+      "hash": "4f7b4ccda2397a75",
+      "analyzed_at": "2026-09-07T09:39:06.728260"
+    },
+    "D:\\Sushrutha\\FusionX\\Lethal-Company\\sample_project\\src\\VulnerableController.java": {
+      "hash": "de3897ff481f1208",
+      "analyzed_at": "2026-09-07T09:39:06.728260"
+    },
+    "D:\\Sushrutha\\FusionX\\Lethal-Company\\sample_project\\src\\app.py": {
+      "hash": "ee031a262ca60acc",
+      "analyzed_at": "2026-09-07T09:39:06.728260"
+    },
+    "D:\\Sushrutha\\FusionX\\Lethal-Company\\sample_project\\src\\vulnerable_app.py": {
+      "hash": "2682134c355d392a",
+      "analyzed_at": "2026-09-07T09:39:06.728260"
+    }
+  },
+  "graph_nodes": 52,
+  "graph_edges": 14
+}

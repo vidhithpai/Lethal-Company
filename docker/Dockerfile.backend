@@ -10,7 +10,10 @@ WORKDIR /app
 
 # Install Python dependencies first (cached layer)
 COPY backend/requirements.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+
+# Pre-install CPU-only PyTorch (much smaller wheel, prevents 540MB PyPI download & network timeouts)
+RUN pip install --no-cache-dir --default-timeout=1000 --retries 5 torch --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir --default-timeout=1000 --retries 5 -r requirements.txt
 
 # Copy source
 COPY backend/ ./backend/
