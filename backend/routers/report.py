@@ -47,12 +47,23 @@ def download_json_report():
                 "explanation": val.get("explanation", "")
             })
 
+    from backend.services.code_security_graph import get_security_root
+    from backend.services.git_history import find_git_root
+    sec_root = get_security_root()
+    is_live_git = bool(sec_root and find_git_root(str(sec_root)))
+    tdra_meta = {
+        "source": "live" if is_live_git else "no_git",
+        "is_demo": not is_live_git,
+        "notice": "DEMO DATA: Differential commits are demo data and not from your repository." if not is_live_git else "LIVE: Verified git commit history from target repository."
+    }
+
     report = {
         "report_metadata": {
             "generated_at": datetime.utcnow().isoformat() + "Z",
             "tool": "VulnGraph",
             "version": "1.0.0",
-            "project": graph.get("meta", {}).get("scanned_project", "unknown")
+            "project": graph.get("meta", {}).get("scanned_project", "unknown"),
+            "tdra_status": tdra_meta,
         },
         "executive_summary": {
             "ai_summary": _generate_ai_summary(
@@ -168,6 +179,18 @@ def download_html_report():
     project = graph.get("meta", {}).get("scanned_project", "unknown")
     generated = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
+    from backend.services.code_security_graph import get_security_root
+    from backend.services.git_history import find_git_root
+    sec_root = get_security_root()
+    is_live_git = bool(sec_root and find_git_root(str(sec_root)))
+    tdra_banner = ""
+    if not is_live_git:
+        tdra_banner = """
+        <div style="background:#FEF3C7; border:1px solid #F59E0B; color:#92400E; padding:12px 16px; border-radius:8px; margin-bottom:20px; font-weight:600; font-size:13px;">
+          âš ï¸ DEMO DATA NOTICE: No git repository detected for this project. Differential git commits and timeline entries are demo data and not from your repository.
+        </div>
+        """
+
     ai_history_html = ""
     for key, val in ai_query_cache.items():
         if "node:" not in key:
@@ -262,6 +285,7 @@ def download_html_report():
   <h1>VulnGraph Security Report</h1>
   <p>Project: {project} · Generated: {generated}</p>
 </div>
+{tdra_banner}
 <div class="summary">
   <div class="stat">
     <div class="stat-num" style="color:#DC2626">{len(sinks)}</div>

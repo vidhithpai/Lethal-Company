@@ -25,7 +25,9 @@ export default function CommitTimeline({ repoPath }) {
   const setSelectedCommit = useStore((s) => s.setSelectedCommit);
   const setNewPaths = useStore((s) => s.setNewPaths);
   const selectedCommit = useStore((s) => s.selectedCommit);
+  const setTimelineMeta = useStore((s) => s.setTimelineMeta);
   const [timelineSource, setTimelineSource] = useState("git_analysis");
+  const [timelineReason, setTimelineReason] = useState("");
   const [activeTab, setActiveTab] = useState("timeline"); // "timeline" | "diff"
 
   // Load timeline when repoPath changes or mounts
@@ -38,12 +40,22 @@ export default function CommitTimeline({ repoPath }) {
       })
       .then((d) => {
         setCommitTimeline(d.timeline || []);
-        setTimelineSource(d.source || "git_analysis");
+        const src = d.source || "git_analysis";
+        const reason = d.reason || (src === "no_git" ? "No git repository found" : "");
+        setTimelineSource(src);
+        setTimelineReason(reason);
+        if (setTimelineMeta) {
+          setTimelineMeta({ source: src, reason });
+        }
       })
       .catch((err) => console.error("[CommitTimeline] Fetch failed:", err));
-  }, [repoPath, setCommitTimeline]);
+  }, [repoPath, setCommitTimeline, setTimelineMeta]);
 
   const handleSelectCommit = async (commit) => {
+    if (timelineSource === "mock" || timelineSource === "no_git") {
+      alert("Notice: This is demo data. Diff views and repository lookups are unavailable because these commits are not from your repository.");
+      return;
+    }
     setSelectedCommit(commit);
     setDiffMode(true);
     setNewPaths(commit.new_paths_detail || []);
@@ -123,9 +135,20 @@ export default function CommitTimeline({ repoPath }) {
               </button>
             </div>
           ) : (
-            <span style={{ color: "#E6EDF3", fontSize: 13, fontWeight: 500 }}>
-              Commit Risk Timeline
-            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ color: "#E6EDF3", fontSize: 13, fontWeight: 500 }}>
+                Commit Risk Timeline
+              </span>
+              {timelineSource === "live" ? (
+                <span style={{ fontSize: 9.5, fontWeight: 700, padding: "1px 6px", borderRadius: 3, background: "rgba(16, 185, 129, 0.15)", color: "#10B981", border: "1px solid rgba(16, 185, 129, 0.3)" }}>
+                  LIVE
+                </span>
+              ) : (
+                <span style={{ fontSize: 9.5, fontWeight: 700, padding: "1px 6px", borderRadius: 3, background: "rgba(245, 158, 11, 0.15)", color: "#F59E0B", border: "1px solid rgba(245, 158, 11, 0.3)" }}>
+                  DEMO
+                </span>
+              )}
+            </div>
           )}
         </div>
 
@@ -158,17 +181,19 @@ export default function CommitTimeline({ repoPath }) {
         </div>
       ) : (
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflowY: "auto" }}>
-          {timelineSource === "no_git" && (
+          {(timelineSource === "mock" || timelineSource === "no_git") && (
             <div
               style={{
-                padding: "8px 14px",
-                background: "#161B22",
-                borderBottom: "1px solid #30363D",
+                padding: "10px 14px",
+                background: "rgba(245, 158, 11, 0.12)",
+                borderBottom: "1px solid rgba(245, 158, 11, 0.3)",
                 fontSize: 11,
-                color: "#8B949E",
+                color: "#F59E0B",
+                fontWeight: 500,
+                lineHeight: 1.4,
               }}
             >
-              No git repository detected for this project path.
+              ⚠️ DEMO DATA: {timelineReason || "No git repository found"}. These commits are not from your repository.
             </div>
           )}
 

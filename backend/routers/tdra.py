@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from backend.services.differential_engine import DifferentialEngine
 from backend.services.statistical_validator import validate_risk_scores as _validate
 from backend.services.git_history import find_git_root
+from backend.services.path_guard import resolve_allowed_repo
 
 router = APIRouter(tags=["tdra"])
 
@@ -43,7 +44,8 @@ class ValidationRequest(BaseModel):
 
 def _get_analyzed_commit_results(repo_path: str, limit: int) -> tuple[list[dict[str, Any]], DifferentialEngine]:
     now = time.time()
-    git_root = find_git_root(repo_path)
+    allowed_p = resolve_allowed_repo(repo_path)
+    git_root = find_git_root(str(allowed_p))
     if not git_root:
         raise ValueError(f"No git repository found for path: {repo_path}")
     cache_key = (git_root, limit)
@@ -75,7 +77,8 @@ def analyze_repo(req: TDRAAnalyzeRequest):
     if not repo_path:
         raise HTTPException(status_code=400, detail="repo_path is required")
 
-    git_root = find_git_root(repo_path)
+    allowed_p = resolve_allowed_repo(repo_path)
+    git_root = find_git_root(str(allowed_p))
     if not git_root:
         raise HTTPException(status_code=400, detail=f"No git repository found for path: {repo_path}")
 
@@ -101,7 +104,8 @@ def run_validation(req: ValidationRequest):
     if not repo_path:
         raise HTTPException(status_code=400, detail="repo_path is required")
 
-    git_root = find_git_root(repo_path)
+    allowed_p = resolve_allowed_repo(repo_path)
+    git_root = find_git_root(str(allowed_p))
     if not git_root:
         raise HTTPException(status_code=400, detail=f"No git repository found for path: {repo_path}")
 
@@ -182,7 +186,8 @@ def get_risk_summary(repo_path: str = Query(...), limit: int = Query(20, ge=1, l
     if not repo_path:
         raise HTTPException(status_code=400, detail="repo_path is required")
 
-    git_root = find_git_root(repo_path)
+    allowed_p = resolve_allowed_repo(repo_path)
+    git_root = find_git_root(str(allowed_p))
     if not git_root:
         return {
             "total_commits_analyzed": 0,
@@ -248,7 +253,8 @@ def get_commit_path_contributions(commit_hash: str, repo_path: str = Query(...))
     if not repo_path:
         raise HTTPException(status_code=400, detail="repo_path is required")
 
-    git_root = find_git_root(repo_path)
+    allowed_p = resolve_allowed_repo(repo_path)
+    git_root = find_git_root(str(allowed_p))
     if not git_root:
         raise HTTPException(status_code=404, detail=f"No git repository found for path: {repo_path}")
 
@@ -305,7 +311,8 @@ def get_commit_analysis(commit_hash: str, repo_path: str = Query(...)):
     if not repo_path:
         raise HTTPException(status_code=400, detail="repo_path is required")
 
-    git_root = find_git_root(repo_path)
+    allowed_p = resolve_allowed_repo(repo_path)
+    git_root = find_git_root(str(allowed_p))
     if not git_root:
         raise HTTPException(status_code=404, detail=f"No git repository found for path: {repo_path}")
 
@@ -330,7 +337,8 @@ async def get_tdra_timeline(repo_path: str = Query(...), limit: int = Query(50))
     import logging
     logger = logging.getLogger("tdra")
 
-    git_root = find_git_root(repo_path)
+    allowed_p = resolve_allowed_repo(repo_path)
+    git_root = find_git_root(str(allowed_p))
     logger.info(f"TDRA timeline request: repo_path={repo_path} resolved_git_root={git_root}")
 
     if not git_root:
@@ -398,9 +406,7 @@ def get_commit_graph_diff(repo_path: str = Query(...), commit: str = Query(...))
     if not commit or not re.match(r"^[0-9a-fA-F]{7,40}$", commit):
         raise HTTPException(status_code=400, detail="Invalid commit hash format")
 
-    p = Path(repo_path).resolve()
-    if not p.exists():
-        raise HTTPException(status_code=404, detail=f"repo_path does not exist: {repo_path}")
+    p = resolve_allowed_repo(repo_path)
 
     git_root = str(p) if (p / ".git").exists() else find_git_root(str(p))
     if not git_root:

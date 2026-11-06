@@ -271,13 +271,15 @@ This is the **one-command** path. Docker handles Python, Node, nginx, and all de
 
 ### Steps
 
-**Step 1 — Set your API key**
+**Step 1 — Set your API keys (optional)**
 ```bash
 # Copy the example file
 cp .env.example .env
 
-# Edit .env and paste your Gemini key
-# GEMINI_API_KEY=your_key_here
+# Edit .env and configure optional keys:
+GROQ_API_KEY=your_groq_key_here          # Optional: powers AI forensic explanations (falls back to rule-based if absent)
+NVD_API_KEY=your_nvd_key_here            # Optional: boosts NIST NVD live query rate limits (falls back to public/cached)
+VULNGRAPH_ALLOWED_ROOTS=/path1:/path2    # Optional: colon-separated allowed directory roots for scanning
 ```
 
 **Step 2 — Build and start everything**
@@ -362,9 +364,14 @@ You need **two terminals** running simultaneously:
 
 **Terminal 1 — Backend (Python API)**
 ```bash
-# From the project root
-uvicorn main:app --host 127.0.0.1 --port 8001 --reload
+# From the project root (default port 8001; or use port 8002 if running alongside Docker)
+uvicorn backend.main:app --host 127.0.0.1 --port 8001 --reload
 ```
+
+> **Note on Ports & VS Code Extension**:
+> - Docker runs the backend on port `8001` (`ports: 8001:8001`).
+> - Manual execution runs on port `8001` by default, or port `8002` (`--port 8002`).
+> - The VS Code extension automatically checks port `8001` and falls back to `8002`, so it seamlessly connects to either setup.
 
 You should see:
 ```
@@ -375,7 +382,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8001
 **Terminal 2 — Frontend (React)**
 ```bash
 # From the project root
-npm run dev
+npm --prefix frontend run dev
 ```
 
 You should see:

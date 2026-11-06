@@ -1,8 +1,15 @@
 dist/
 node_modules/
-./__pycache__
+__pycache__/
 *.pyc
 .venv
+.env
 .env.*
-reference/
+backend/.env
+frontend/.env.local
+*.vsix
+.vulngraph_manifest.json
+chroma_db/
 .vulngraph_cache/
+vulngraph_uploads/
+reference/

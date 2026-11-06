@@ -166,9 +166,10 @@ export default function UnifiedPanel({
     }
   };
 
-  const riskScore = selectedNode ? (selectedNode.severity || selectedNode.score || 8.0).toFixed(1) : "0.0";
+  const defaultScore = selectedNode?.type === 'sink' ? 8.0 : (selectedNode?.type === 'source' ? 5.0 : (selectedNode?.type === 'sanitizer' ? 2.0 : 1.0));
+  const riskScore = selectedNode ? (selectedNode.severity || selectedNode.score || defaultScore).toFixed(1) : "0.0";
   const nodeTypeUpper = selectedNode ? String(selectedNode.type || 'NODE').toUpperCase() : '';
-  const nodeRiskUpper = selectedNode ? String(selectedNode.risk || 'HIGH RISK').toUpperCase() : '';
+  const nodeRiskUpper = selectedNode ? String(selectedNode.risk || (selectedNode.type === 'sink' ? 'HIGH RISK' : (selectedNode.type === 'source' ? 'ENTRY POINT' : (selectedNode.type === 'sanitizer' ? 'GUARD' : 'NORMAL NODE')))).toUpperCase() : '';
 
   return (
     <div className="side-panel">
@@ -310,7 +311,11 @@ export default function UnifiedPanel({
                 {/* ⚠️ AI VULNERABILITY ANALYSIS */}
                 <div className="intel-card">
                   <div className="intel-card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span>⚠️ AI VULNERABILITY ANALYSIS</span>
+                    <span>
+                      {activeAnalysis?.cwe && activeAnalysis.cwe !== "None"
+                        ? "⚠️ AI VULNERABILITY ANALYSIS"
+                        : "ℹ️ NODE BEHAVIOR ANALYSIS"}
+                    </span>
                     {activeAnalysis?.severity && (
                       <span
                         style={{
@@ -335,7 +340,11 @@ export default function UnifiedPanel({
                     <>
                       <div
                         className="cwe-title-text"
-                        style={{ color: getSeverityColor(activeAnalysis?.severity || selectedNode?.risk) }}
+                        style={{
+                          color: (activeAnalysis?.cwe && activeAnalysis.cwe !== "None")
+                            ? getSeverityColor(activeAnalysis?.severity || selectedNode?.risk)
+                            : "#10B981"
+                        }}
                       >
                         {activeAnalysis?.vuln_type || (selectedNode?.label ? `Analysis: ${selectedNode.label}` : "Node Analysis")}
                       </div>
@@ -406,7 +415,7 @@ export default function UnifiedPanel({
                     </div>
                     <div className="metric-stat-row">
                       <span className="metric-stat-lbl">Taint Score</span>
-                      <span className="metric-stat-val" style={{ color: "var(--color-sink)" }}>8.0</span>
+                      <span className="metric-stat-val" style={{ color: selectedNode?.type === 'sink' ? 'var(--color-sink)' : (selectedNode?.type === 'source' ? 'var(--color-source)' : '#10B981') }}>{riskScore}</span>
                     </div>
                   </div>
                 </div>

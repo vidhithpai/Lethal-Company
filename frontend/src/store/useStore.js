@@ -68,12 +68,15 @@ const useStore = create((set, get) => ({
   commitTimeline: [],
   newPaths: [],
   diffStatus: null,
+  timelineSource: "live",
+  timelineReason: "",
 
   setDiffMode: (v) => set({ diffMode: v, ...(v ? {} : { diffStatus: null }) }),
   setSelectedCommit: (c) => set({ selectedCommit: c, ...(c ? {} : { diffStatus: null }) }),
   setCommitTimeline: (t) => set({ commitTimeline: t }),
   setNewPaths: (p) => set({ newPaths: p }),
   setDiffStatus: (status) => set({ diffStatus: status }),
+  setTimelineMeta: ({ source, reason }) => set({ timelineSource: source || "live", timelineReason: reason || "" }),
 
   // ── Explorer panel filter state ───────────────────────────────────────────
   nodeVisibility: {

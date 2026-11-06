@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Query, HTTPException
 from backend.services.git_history import find_git_root, enrich_nodes_with_git
+from backend.services.path_guard import resolve_allowed_repo
 import subprocess
 import re
 from pathlib import Path
@@ -145,18 +146,20 @@ def _collect_tdra_overlay(git_root: Path, full_hash: str) -> tuple[dict, set, se
 
 @router.get("/blame")
 def git_blame(project_path: str = Query(...)):
+    allowed_p = resolve_allowed_repo(project_path)
     try:
-        git_root = find_git_root(project_path)
-        return {"git_root": git_root, "status": "ok"}
+        git_root = find_git_root(str(allowed_p))
+        return {"git_root": git_root, "status": "ok" if git_root else "no_git"}
     except Exception as e:
         return {"git_root": None, "status": "no_git", "detail": str(e)}
 
 
 @router.get("/timeline")
 def git_timeline(project_path: str = Query(...), limit: int = Query(20)):
+    allowed_p = resolve_allowed_repo(project_path)
     try:
         import git
-        repo = git.Repo(project_path, search_parent_directories=True)
+        repo = git.Repo(str(allowed_p), search_parent_directories=True)
         commits = []
         for c in list(repo.iter_commits(max_count=limit)):
             commits.append({
@@ -176,9 +179,7 @@ def get_commit_diff(repo_path: str = Query(...), commit: str = Query(...)):
     if not commit or not re.match(r"^[0-9a-fA-F]{7,40}$", commit):
         raise HTTPException(status_code=400, detail="Invalid commit hash format")
 
-    p = Path(repo_path).resolve()
-    if not p.exists():
-        raise HTTPException(status_code=404, detail="Repository path does not exist")
+    p = resolve_allowed_repo(repo_path)
 
     git_root = p if (p / ".git").exists() else (Path(find_git_root(str(p))) if find_git_root(str(p)) else None)
     if not git_root or not (git_root / ".git").exists():

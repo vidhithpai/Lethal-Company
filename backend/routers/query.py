@@ -177,8 +177,10 @@ def explain_node(
         ctx = {}
 
     analysis = ctx.get("analysis", {})
-    cwe_id = analysis.get("cwe", "CWE-20")
-    cwe_name = analysis.get("cwe_name", "Improper Input Validation")
+    cwe_id = analysis.get("cwe") or ""
+    if cwe_id == "None":
+        cwe_id = ""
+    cwe_name = analysis.get("cwe_name") or ""
     role = analysis.get("role", req.node_type if req and req.node_type else "node")
     node_label = req.label if (req and req.label) else ctx.get("node", {}).get("label", target_id)
 
@@ -224,16 +226,18 @@ def explain_node(
     else:
         explanation = f"Analysis for {cwe_id} ({cwe_name}): {analysis.get('what_it_does', '')} {analysis.get('root_cause', '')}"
 
+    default_vuln = f"{cwe_id}: {cwe_name}" if (cwe_id and cwe_name) else (cwe_name or ("Benign / No Direct Attack Path" if role in ("normal", "intermediate") else "Node Analysis"))
+    default_severity = "LOW" if role in ("normal", "intermediate") else ("HIGH" if role == "sink" else "MEDIUM")
     result = {
         "node_id": target_id,
-        "vuln_type": analysis.get("vuln_type", f"{cwe_id}: {cwe_name}"),
+        "vuln_type": analysis.get("vuln_type") or default_vuln,
         "cwe": cwe_id,
         "cwe_name": cwe_name,
         "cwes": analysis.get("cwes", []),
         "what_it_does": analysis.get("what_it_does", ""),
         "root_cause": analysis.get("root_cause", ""),
         "fix": analysis.get("fix", ""),
-        "severity": analysis.get("severity", "HIGH"),
+        "severity": analysis.get("severity") or default_severity,
         "role": role,
         "explanation": explanation
     }

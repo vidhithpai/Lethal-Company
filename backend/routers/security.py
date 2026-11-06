@@ -17,6 +17,7 @@ from backend.services.code_security_graph import (
     COMMUNITY_COLORS,
     compute_patch_impact,
 )
+from backend.services.path_guard import is_safe_file_path
 
 router = APIRouter(tags=["security"])
 
@@ -229,7 +230,10 @@ def infer_node_cwe(node_data: dict) -> tuple[str, str]:
     if any(k in label for k in ("forname", "method.invoke", "reflection")):
         return "CWE-470", "Use of Externally-Controlled Input to Select Classes or Code ('Unsafe Reflection')"
 
-    return "CWE-20", "Improper Input Validation (Generic - unmapped)"
+    if node_data.get("type") == "sink":
+        return "CWE-20", "Improper Input Validation (Unclassified Sink)"
+
+    return "", ""
 
 
 def build_node_analysis(
@@ -281,7 +285,7 @@ def build_node_analysis(
             sid = s["id"]
             sdata = g.nodes.get(sid, {})
             scwe, sname = infer_node_cwe(sdata)
-            if scwe not in seen_cwes:
+            if scwe and scwe not in seen_cwes:
                 seen_cwes.add(scwe)
                 sink_cwes.append({
                     "cwe": scwe,
@@ -359,7 +363,7 @@ def build_node_analysis(
             sid = s["id"]
             sdata = g.nodes.get(sid, {})
             scwe, sname = infer_node_cwe(sdata)
-            if scwe not in seen_cwes:
+            if scwe and scwe not in seen_cwes:
                 seen_cwes.add(scwe)
                 sink_cwes.append({
                     "cwe": scwe,
@@ -379,12 +383,12 @@ def build_node_analysis(
             cwes = sink_cwes
             severity = "LOW"
         else:
-            primary_cwe = "CWE-20"
-            primary_name = "Improper Input Validation (Generic - unmapped)"
-            what_it_does = f"Sanitizer routine '{label}' at {fname}:{line} designed to validate or neutralize untrusted data."
-            root_cause = "Sanitization point detected along execution path."
+            primary_cwe = ""
+            primary_name = "Defensive Security Guard"
+            what_it_does = f"Security guard / sanitizer routine '{label}' at {fname}:{line}."
+            root_cause = "Sanitization point detected along execution path. No exposed attack corridor currently reaches unmitigated sinks."
             fix = "Ensure validation regex or checks reject non-conforming characters and edge cases."
-            cwes = [{"cwe": primary_cwe, "name": primary_name, "role": "sanitizer"}]
+            cwes = []
             severity = "LOW"
 
     # INTERMEDIATE / FUNCTION / NORMAL
@@ -395,7 +399,7 @@ def build_node_analysis(
             sid = s["id"]
             sdata = g.nodes.get(sid, {})
             scwe, sname = infer_node_cwe(sdata)
-            if scwe not in seen_cwes:
+            if scwe and scwe not in seen_cwes:
                 seen_cwes.add(scwe)
                 sink_cwes.append({
                     "cwe": scwe,
@@ -442,7 +446,7 @@ def build_node_analysis(
 
     vuln_title = f"{primary_cwe}: {primary_name}" if primary_cwe else primary_name
     return {
-        "cwe": primary_cwe or "None",
+        "cwe": primary_cwe or "",
         "cwe_name": primary_name,
         "vuln_type": vuln_title,
         "cwes": cwes,
@@ -677,37 +681,7 @@ def get_file_source(filepath: str = Query(...)):
         raise HTTPException(status_code=404, detail=f"File not found: {raw_path}")
 
     # Security: check if file is within safe directories
-    allowed_roots = [
-        Path("/tmp/vulngraph_uploads").resolve(),
-        Path("/tmp").resolve(),
-        Path(tempfile.gettempdir()).resolve(),
-        Path.cwd().resolve(),
-        Path.cwd().parent.resolve(),
-        Path.home().resolve(),
-    ]
-    if Path("/app").exists():
-        allowed_roots.append(Path("/app").resolve())
-    if Path("/host").exists():
-        allowed_roots.append(Path("/host").resolve())
-
-    is_safe = False
-    norm_target = str(target_file.resolve()).replace("\\", "/").lower()
-    for ar in allowed_roots:
-        norm_ar = str(ar).replace("\\", "/").lower()
-        if norm_target.startswith(norm_ar):
-            is_safe = True
-            break
-        try:
-            target_file.resolve().relative_to(ar)
-            is_safe = True
-            break
-        except ValueError:
-            pass
-
-    if "vulngraph_uploads" in norm_target:
-        is_safe = True
-
-    if not is_safe:
+    if not is_safe_file_path(target_file):
         raise HTTPException(status_code=403, detail="Access denied")
 
     try:

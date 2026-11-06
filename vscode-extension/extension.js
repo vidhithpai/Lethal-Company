@@ -630,7 +630,8 @@ async function runIncrementalScan(triggerDoc, context) {
     const sinks = (_lastScanData?.sinks || 0);
     const rf = _lastTimeline?.timeline?.slice(-1)[0]?.risk_factor;
     const rfStr = rf != null ? ` · RF ${rf.toFixed(2)}` : '';
-    setStatus(`$(shield) VulnGraph: ${sinks} sinks${rfStr}`,
+    const demoTag = _lastTimeline?.source === 'mock' ? ' [demo]' : '';
+    setStatus(`$(shield) VulnGraph: ${sinks} sinks${rfStr}${demoTag}`,
       `Last scan: ${new Date().toLocaleTimeString()}`);
 
     if (_riskPanel) refreshRiskPanel();

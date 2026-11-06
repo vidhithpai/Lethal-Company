@@ -15,6 +15,7 @@ from backend.services.code_security_graph import (
     compute_high_risk_paths
 )
 from backend.services.git_history import find_git_root, enrich_nodes_with_git
+from backend.services.path_guard import register_scanned_root
 from backend.services.rag_engine import index_graph_findings
 from backend.services.java_graph_builder import analyze_java_codebase, detect_project_language
 from backend.routers.query import update_graph_summary
@@ -111,6 +112,7 @@ def scan(req: ScanRequest):
                             detail=f"Project path must be an existing directory: {project_path}",
                         )
 
+    register_scanned_root(p)
     _scan_state.update({
         "status": "scanning",
         "last_path": str(p),
@@ -215,17 +217,15 @@ def scan(req: ScanRequest):
         except Exception as e:
             print(f"[RAG] Background indexing failed: {e}")
 
-    # Get current TDRA data for indexing
+    # Get current TDRA data for indexing (never index mock/demo data)
     try:
-        from backend.services.mock_tdra_data import get_mock_timeline
-        # Try to get real timeline, fall back to mock for indexing
         try:
             from backend.routers.tdra import _get_analyzed_commit_results
             tdra_results, _ = _get_analyzed_commit_results(
                 str(p), limit=20
             )
         except Exception:
-            tdra_results = get_mock_timeline()[:10]
+            tdra_results = []
         
         bg_thread = threading.Thread(
             target=_index_in_background,
@@ -329,6 +329,7 @@ async def scan_upload(
     base = Path("/tmp/vulngraph_uploads") / safe_name
     base.mkdir(parents=True, exist_ok=True)
 
+    register_scanned_root(base)
     _scan_state.update({
         "status": "scanning",
         "last_path": str(base),
@@ -390,6 +391,7 @@ async def scan_upload(
         csg._current_paths = attack_paths
         csg._current_high_risk = attack_paths
 
+        register_scanned_root(target_dir)
         _scan_state.update({
             "status": "complete",
             "last_path": str(target_dir),
@@ -472,6 +474,7 @@ def scan_realworld(req: RealWorldScanRequest):
             impact = compute_patch_impact(g, nid, paths)
             data["patch_impact"] = impact["patch_impact"]
             
+    register_scanned_root(p)
     _scan_state.update({
         "last_path": str(p),
         "label": req.label,
